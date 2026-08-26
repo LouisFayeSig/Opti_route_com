@@ -19,6 +19,7 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
             "order": "D",
             "color": "#1565C0",
             "rgb": [21, 101, 192],
+            "radius": 520,
         }
     ]
     for _, row in plan.table.iterrows():
@@ -31,6 +32,7 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
                 "order": str(int(row["Ordre"])),
                 "color": "#2E7D32" if is_last else "#D32F2F",
                 "rgb": [46, 125, 50] if is_last else [211, 47, 47],
+                "radius": 350,
             }
         )
     return points
@@ -65,7 +67,7 @@ def _direction_arrows(geometry: list[tuple[float, float]]) -> list[dict[str, obj
     return arrows
 
 
-def render_fallback_map(plan: RoutePlan, height: int = 560) -> None:
+def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
     points = _map_points(plan)
     arrows = _direction_arrows(plan.geometry)
     path = [[longitude, latitude] for latitude, longitude in plan.geometry]
@@ -82,7 +84,7 @@ def render_fallback_map(plan: RoutePlan, height: int = 560) -> None:
             data=points,
             get_position="[longitude, latitude]",
             get_fill_color="rgb",
-            get_radius=350,
+            get_radius="radius",
             radius_min_pixels=8,
             radius_max_pixels=16,
             pickable=True,
@@ -110,10 +112,18 @@ def render_fallback_map(plan: RoutePlan, height: int = 560) -> None:
             get_alignment_baseline="center",
         ),
     ]
+    latitude_span = max(point["latitude"] for point in points) - min(
+        point["latitude"] for point in points
+    )
+    longitude_span = max(point["longitude"] for point in points) - min(
+        point["longitude"] for point in points
+    )
+    largest_span = max(float(latitude_span), float(longitude_span), 0.01)
+    zoom = max(3.5, min(14.0, math.log2(360 / largest_span) - 1.6))
     view = pdk.ViewState(
         latitude=sum(point["latitude"] for point in points) / len(points),
         longitude=sum(point["longitude"] for point in points) / len(points),
-        zoom=9,
+        zoom=zoom,
     )
     st.pydeck_chart(
         pdk.Deck(
@@ -198,8 +208,13 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
     components.html(document, height=height, scrolling=False)
 
 
-def render_map(plan: RoutePlan, subscription_key: str | None, height: int = 560) -> None:
-    if subscription_key:
+def render_map(
+    plan: RoutePlan,
+    subscription_key: str | None,
+    height: int = 560,
+    renderer: str = "pydeck",
+) -> None:
+    if renderer == "azure" and subscription_key:
         render_azure_map(plan, subscription_key, height=height)
     else:
-        render_fallback_map(plan, height=height)
+        render_pydeck_map(plan, height=height)

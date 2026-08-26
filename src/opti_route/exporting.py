@@ -4,17 +4,19 @@ import io
 from urllib.parse import quote
 
 from openpyxl.styles import Font, PatternFill
+from PIL import Image as PillowImage
+from PIL import ImageDraw
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .planner import RoutePlan
 
 
 def _export_table(plan: RoutePlan):
-    return plan.table.drop(columns=["Latitude", "Longitude"], errors="ignore").rename(
+    return plan.itinerary_table().rename(
         columns={
             "Distance": "Distance depuis le précédent (km)",
             "Temps": "Temps depuis le précédent (min)",
@@ -65,6 +67,57 @@ def excel_bytes(plan: RoutePlan) -> bytes:
     return output.getvalue()
 
 
+def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600) -> bytes:
+    image = PillowImage.new("RGB", (width, height), "#F4F7FA")
+    draw = ImageDraw.Draw(image)
+    for x in range(0, width, 100):
+        draw.line((x, 0, x, height), fill="#E5EAF0", width=1)
+    for y in range(0, height, 100):
+        draw.line((0, y, width, y), fill="#E5EAF0", width=1)
+
+    all_points = plan.geometry or plan.route_coordinates
+    latitudes = [latitude for latitude, _ in all_points]
+    longitudes = [longitude for _, longitude in all_points]
+    min_latitude, max_latitude = min(latitudes), max(latitudes)
+    min_longitude, max_longitude = min(longitudes), max(longitudes)
+    latitude_span = max(max_latitude - min_latitude, 0.001)
+    longitude_span = max(max_longitude - min_longitude, 0.001)
+    padding = 55
+
+    def pixel(point: tuple[float, float]) -> tuple[int, int]:
+        latitude, longitude = point
+        x = padding + (longitude - min_longitude) / longitude_span * (width - 2 * padding)
+        y = height - padding - (latitude - min_latitude) / latitude_span * (height - 2 * padding)
+        return round(x), round(y)
+
+    route_pixels = [pixel(point) for point in all_points]
+    if len(route_pixels) > 1:
+        draw.line(route_pixels, fill="#1565C0", width=7, joint="curve")
+
+    stop_points = plan.route_coordinates[:-1] if plan.return_to_start else plan.route_coordinates
+    for index, point in enumerate(stop_points):
+        x, y = pixel(point)
+        is_start = index == 0
+        is_arrival = not plan.return_to_start and index == len(stop_points) - 1
+        color = "#1565C0" if is_start else "#2E7D32" if is_arrival else "#D32F2F"
+        radius = 16 if is_start else 14
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color, outline="white", width=3)
+        label = "D" if is_start else str(index)
+        box = draw.textbbox((0, 0), label)
+        text_width, text_height = box[2] - box[0], box[3] - box[1]
+        draw.text((x - text_width / 2, y - text_height / 2 - 1), label, fill="white")
+
+    draw.text((padding, 18), f"Tournée · {plan.visit_count} visites", fill="#263238")
+    draw.text(
+        (padding, height - 30),
+        "Bleu : départ   Rouge : visite   Vert : arrivée   —   Schéma sans fond cartographique",
+        fill="#607080",
+    )
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def pdf_bytes(plan: RoutePlan) -> bytes:
     output = io.BytesIO()
     document = SimpleDocTemplate(
@@ -86,13 +139,26 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
         )
     )
     content.append(Spacer(1, 6 * mm))
+    map_bytes = plan.map_image or _fallback_route_image(plan)
+    map_flowable = Image(io.BytesIO(map_bytes), width=250 * mm, height=135 * mm)
+    content.append(map_flowable)
+    content.append(Spacer(1, 5 * mm))
+    content.append(
+        Paragraph(
+            "<font color='#1565C0'>●</font> Départ &nbsp;&nbsp; "
+            "<font color='#D32F2F'>●</font> Visite &nbsp;&nbsp; "
+            "<font color='#2E7D32'>●</font> Arrivée",
+            styles["Normal"],
+        )
+    )
+    content.append(Spacer(1, 8 * mm))
     export = _export_table(plan)
-    columns = ["Ordre", "Client", "Ville", "Distance depuis le précédent (km)", "Temps depuis le précédent (min)"]
+    columns = ["Étape", "Client", "Ville", "Distance depuis le précédent (km)", "Temps depuis le précédent (min)"]
     rows = [columns]
     for _, row in export[columns].iterrows():
         rows.append(
             [
-                str(row["Ordre"]),
+                str(row["Étape"]),
                 str(row["Client"]),
                 str(row["Ville"]),
                 f"{float(row['Distance depuis le précédent (km)']):.1f}",

@@ -13,6 +13,7 @@ class Settings:
     azure_maps_key: str | None
     geocode_cache_path: Path
     clients_file: Path | None
+    map_renderer: str = "pydeck"
     request_timeout_seconds: float = 30.0
 
     @property
@@ -41,11 +42,14 @@ def load_settings(project_root: Path | None = None) -> Settings:
         cache_path = root / cache_path
 
     timeout = float(os.getenv("AZURE_MAPS_TIMEOUT_SECONDS", "30"))
+    map_renderer = os.getenv("MAP_RENDERER", "pydeck").strip().casefold()
+    if map_renderer not in {"pydeck", "azure"}:
+        map_renderer = "pydeck"
     return Settings(
         azure_maps_endpoint=endpoint,
         azure_maps_key=key.strip() if key else None,
         geocode_cache_path=cache_path,
         clients_file=clients_file,
+        map_renderer=map_renderer,
         request_timeout_seconds=timeout,
     )
-

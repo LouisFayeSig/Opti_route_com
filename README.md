@@ -13,7 +13,7 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
-- export Excel, CSV et PDF, ainsi que partage vers Google Maps ;
+- export Excel et CSV, PDF avec capture cartographique, ainsi que partage vers Google Maps ;
 - mode d'estimation local lorsque la clé Azure Maps n'est pas configurée.
 
 ## Installation
@@ -46,6 +46,12 @@ Le fichier peut être importé depuis la page. Pour proposer un fichier déjà p
 
 ```dotenv
 CLIENTS_FILE=data/mon_portefeuille.xlsx
+```
+
+Le calcul des routes reste effectué par Azure Maps. Le fond interactif Streamlit utilise PyDeck par défaut afin de ne pas exposer la clé au navigateur et de ne pas dépendre des règles CORS. Le contrôle Web Azure peut être réactivé après configuration de l'origine Streamlit dans Azure Maps :
+
+```dotenv
+MAP_RENDERER=azure
 ```
 
 ## Colonnes clients

@@ -49,8 +49,11 @@ def test_planner_builds_route_and_exports() -> None:
     assert plan.visit_count == 3
     assert plan.route_coordinates[0] == plan.route_coordinates[-1]
     assert plan.total_distance_m > 0
+    assert plan.itinerary_table()["Étape"].tolist() == ["Départ", "1", "2", "3", "Retour"]
     assert csv_bytes(plan).startswith(b"\xef\xbb\xbf")
+    assert "Départ" in csv_bytes(plan).decode("utf-8-sig")
     assert excel_bytes(plan).startswith(b"PK")
-    assert pdf_bytes(plan).startswith(b"%PDF")
+    pdf = pdf_bytes(plan)
+    assert pdf.startswith(b"%PDF")
+    assert b"/Subtype /Image" in pdf
     assert "google.com/maps/dir" in google_maps_url(plan)
-

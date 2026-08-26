@@ -33,10 +33,55 @@ class RoutePlan:
     candidates_in_radius: int
     omitted_for_duration: int = 0
     warnings: list[str] = field(default_factory=list)
+    map_image: bytes | None = None
 
     @property
     def visit_count(self) -> int:
         return len(self.table)
+
+    def itinerary_table(self) -> pd.DataFrame:
+        """Ajoute le départ et, le cas échéant, le retour au détail des visites."""
+        rows: list[dict[str, object]] = [
+            {
+                "Étape": "Départ",
+                "Client": self.start.label,
+                "Ville": "",
+                "Adresse": self.start.label,
+                "Distance": 0.0,
+                "Temps": 0.0,
+                "Distance cumulée": 0.0,
+                "Temps cumulé": 0.0,
+            }
+        ]
+        for _, visit in self.table.iterrows():
+            rows.append(
+                {
+                    "Étape": str(int(visit["Ordre"])),
+                    "Client": visit["Client"],
+                    "Ville": visit["Ville"],
+                    "Adresse": visit["Adresse"],
+                    "Distance": visit["Distance"],
+                    "Temps": visit["Temps"],
+                    "Distance cumulée": visit["Distance cumulée"],
+                    "Temps cumulé": visit["Temps cumulé"],
+                }
+            )
+        if self.return_to_start:
+            previous_distance_m = round(float(self.table.iloc[-1]["Distance cumulée"]) * 1000)
+            previous_duration_s = round(float(self.table.iloc[-1]["Temps cumulé"]) * 60)
+            rows.append(
+                {
+                    "Étape": "Retour",
+                    "Client": self.start.label,
+                    "Ville": "",
+                    "Adresse": self.start.label,
+                    "Distance": (self.total_distance_m - previous_distance_m) / 1000,
+                    "Temps": (self.total_duration_s - previous_duration_s) / 60,
+                    "Distance cumulée": self.total_distance_m / 1000,
+                    "Temps cumulé": self.total_duration_s / 60,
+                }
+            )
+        return pd.DataFrame(rows)
 
 
 def build_route_plan(
@@ -120,11 +165,20 @@ def build_route_plan(
 
     route_coordinates = [node_coordinates[node] for node in ordered_nodes]
     geometry = route_coordinates
+    map_image: bytes | None = None
     if azure_client is not None and provider == "Azure Maps":
         try:
             geometry = azure_client.route_path(route_coordinates)
         except AzureMapsError as exc:
             warnings.append(f"Tracé routier Azure indisponible : {exc}")
+        try:
+            map_image = azure_client.static_route_map(
+                route_coordinates,
+                geometry,
+                return_to_start=return_to_start,
+            )
+        except AzureMapsError as exc:
+            warnings.append(f"Capture Azure indisponible pour le PDF : {exc}")
 
     return RoutePlan(
         start=start,
@@ -138,5 +192,5 @@ def build_route_plan(
         candidates_in_radius=candidate_count,
         omitted_for_duration=len(selected) - len(visited_nodes),
         warnings=warnings,
+        map_image=map_image,
     )
-

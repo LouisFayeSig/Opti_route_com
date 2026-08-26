@@ -44,7 +44,7 @@ st.markdown(
       .block-container {padding-top: 1.4rem; padding-bottom: 2rem; max-width: 1550px;}
       h1 {font-size: 2rem !important; letter-spacing: -.03em; margin-bottom: .15rem !important;}
       h2, h3 {letter-spacing: -.02em;}
-      div[data-testid="stMetric"] {background:#f7f9fc; border:1px solid #e3e8ef;
+      div[data-testid="stMetric"] {background:rgba(128,128,128,.09); border:1px solid rgba(128,128,128,.22);
         padding:12px 14px; border-radius:12px;}
       div[data-testid="stFileUploader"] section {padding: .7rem;}
       .opti-subtitle {color:#607080; margin-bottom:1rem;}
@@ -213,6 +213,7 @@ def _format_duration(seconds: int) -> str:
 
 
 def _render_plan_summary(plan: RoutePlan) -> None:
+    st.info(f"**Point de départ :** {plan.start.label}", icon="📍")
     metric_columns = st.columns(3)
     metric_columns[0].metric("Distance totale", f"{plan.total_distance_m / 1000:.1f} km")
     metric_columns[1].metric("Temps de conduite", _format_duration(plan.total_duration_s))
@@ -221,7 +222,12 @@ def _render_plan_summary(plan: RoutePlan) -> None:
         f"Calcul : {plan.provider} · {plan.candidates_in_radius} clients dans le rayon"
         + (f" · {plan.omitted_for_duration} retirés par la contrainte de durée" if plan.omitted_for_duration else "")
     )
-    render_map(plan, settings.azure_maps_key, height=520)
+    render_map(
+        plan,
+        settings.azure_maps_key,
+        height=520,
+        renderer=settings.map_renderer,
+    )
     st.markdown(
         "<span style='color:#1565C0'>●</span> Départ &nbsp;&nbsp; "
         "<span style='color:#D32F2F'>●</span> Visite &nbsp;&nbsp; "
@@ -232,8 +238,8 @@ def _render_plan_summary(plan: RoutePlan) -> None:
 
 def _render_results(plan: RoutePlan) -> None:
     st.subheader("Ordre de visite")
-    display = plan.table[
-        ["Ordre", "Client", "Ville", "Distance", "Temps", "Distance cumulée", "Temps cumulé"]
+    display = plan.itinerary_table()[
+        ["Étape", "Client", "Ville", "Distance", "Temps", "Distance cumulée", "Temps cumulé"]
     ].copy()
     st.dataframe(
         display,
@@ -241,7 +247,7 @@ def _render_results(plan: RoutePlan) -> None:
         use_container_width=True,
         height=min(590, 42 + 35 * len(display)),
         column_config={
-            "Ordre": st.column_config.NumberColumn("Ordre", format="%d"),
+            "Étape": st.column_config.TextColumn("Étape"),
             "Distance": st.column_config.NumberColumn("Distance", format="%.1f km"),
             "Temps": st.column_config.NumberColumn("Temps", format="%.0f min"),
             "Distance cumulée": st.column_config.NumberColumn("Cumul", format="%.1f km"),
