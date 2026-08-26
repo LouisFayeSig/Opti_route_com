@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import json
+import math
+
+import pydeck as pdk
+import streamlit as st
+import streamlit.components.v1 as components
+
+from .planner import RoutePlan
+
+
+def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
+    points: list[dict[str, object]] = [
+        {
+            "latitude": plan.start.latitude,
+            "longitude": plan.start.longitude,
+            "label": plan.start.label,
+            "order": "D",
+            "color": "#1565C0",
+            "rgb": [21, 101, 192],
+        }
+    ]
+    for _, row in plan.table.iterrows():
+        is_last = int(row["Ordre"]) == plan.visit_count and not plan.return_to_start
+        points.append(
+            {
+                "latitude": float(row["Latitude"]),
+                "longitude": float(row["Longitude"]),
+                "label": str(row["Client"]),
+                "order": str(int(row["Ordre"])),
+                "color": "#2E7D32" if is_last else "#D32F2F",
+                "rgb": [46, 125, 50] if is_last else [211, 47, 47],
+            }
+        )
+    return points
+
+
+def _direction_arrows(geometry: list[tuple[float, float]]) -> list[dict[str, object]]:
+    if len(geometry) < 2:
+        return []
+    arrow_count = min(6, max(1, len(geometry) // 8))
+    arrows: list[dict[str, object]] = []
+    used_indices: set[int] = set()
+    for position in range(1, arrow_count + 1):
+        index = min(
+            len(geometry) - 2,
+            round((len(geometry) - 2) * position / (arrow_count + 1)),
+        )
+        if index in used_indices:
+            continue
+        used_indices.add(index)
+        latitude, longitude = geometry[index]
+        next_latitude, next_longitude = geometry[index + 1]
+        horizontal = (next_longitude - longitude) * math.cos(math.radians(latitude))
+        vertical = -(next_latitude - latitude)
+        arrows.append(
+            {
+                "latitude": latitude,
+                "longitude": longitude,
+                "angle": math.degrees(math.atan2(vertical, horizontal)),
+                "arrow": "➤",
+            }
+        )
+    return arrows
+
+
+def render_fallback_map(plan: RoutePlan, height: int = 560) -> None:
+    points = _map_points(plan)
+    arrows = _direction_arrows(plan.geometry)
+    path = [[longitude, latitude] for latitude, longitude in plan.geometry]
+    layers = [
+        pdk.Layer(
+            "PathLayer",
+            data=[{"path": path}],
+            get_path="path",
+            get_color=[21, 101, 192],
+            width_min_pixels=4,
+        ),
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=points,
+            get_position="[longitude, latitude]",
+            get_fill_color="rgb",
+            get_radius=350,
+            radius_min_pixels=8,
+            radius_max_pixels=16,
+            pickable=True,
+            stroked=True,
+            get_line_color=[255, 255, 255],
+            line_width_min_pixels=2,
+        ),
+        pdk.Layer(
+            "TextLayer",
+            data=points,
+            get_position="[longitude, latitude]",
+            get_text="order",
+            get_color=[255, 255, 255],
+            get_size=12,
+            get_alignment_baseline="center",
+        ),
+        pdk.Layer(
+            "TextLayer",
+            data=arrows,
+            get_position="[longitude, latitude]",
+            get_text="arrow",
+            get_color=[21, 101, 192],
+            get_size=22,
+            get_angle="angle",
+            get_alignment_baseline="center",
+        ),
+    ]
+    view = pdk.ViewState(
+        latitude=sum(point["latitude"] for point in points) / len(points),
+        longitude=sum(point["longitude"] for point in points) / len(points),
+        zoom=9,
+    )
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=layers,
+            initial_view_state=view,
+            tooltip={"text": "{order} — {label}"},
+            map_style=pdk.map_styles.LIGHT,
+        ),
+        height=height,
+        use_container_width=True,
+    )
+
+
+def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) -> None:
+    points = _map_points(plan)
+    payload = {
+        "points": points,
+        "path": [[longitude, latitude] for latitude, longitude in plan.geometry],
+        "arrows": _direction_arrows(plan.geometry),
+    }
+    # Empêche une valeur issue du fichier importé de fermer la balise script.
+    payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    key_json = json.dumps(subscription_key)
+    document = f"""
+    <!doctype html>
+    <html lang="fr">
+    <head>
+      <meta charset="utf-8">
+      <link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/3/atlas.min.css" />
+      <script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/3/atlas.min.js"></script>
+      <style>html,body,#map{{margin:0;width:100%;height:100%;font-family:Arial,sans-serif}}</style>
+    </head>
+    <body><div id="map"></div>
+    <script>
+      const data = {payload_json};
+      const map = new atlas.Map('map', {{
+        authOptions: {{authType: 'subscriptionKey', subscriptionKey: {key_json}}},
+        style: 'road', language: 'fr-FR', view: 'Auto'
+      }});
+      map.events.add('ready', () => {{
+        const source = new atlas.source.DataSource();
+        map.sources.add(source);
+        if (data.path.length > 1) {{
+          source.add(new atlas.data.Feature(new atlas.data.LineString(data.path), {{kind:'route'}}));
+        }}
+        data.points.forEach(p => source.add(new atlas.data.Feature(
+          new atlas.data.Point([p.longitude, p.latitude]), p
+        )));
+        data.arrows.forEach(a => map.markers.add(new atlas.HtmlMarker({{
+          position: [a.longitude, a.latitude],
+          htmlContent: `<div style="transform:rotate(${{a.angle}}deg);color:#1565C0;` +
+            `font-size:21px;font-weight:bold;text-shadow:0 0 3px white">➤</div>`,
+          anchor: 'center'
+        }})));
+        map.layers.add(new atlas.layer.LineLayer(source, null, {{
+          filter:['==',['geometry-type'],'LineString'], strokeColor:'#1565C0', strokeWidth:5
+        }}));
+        map.layers.add(new atlas.layer.BubbleLayer(source, 'stops', {{
+          filter:['==',['geometry-type'],'Point'], color:['get','color'], radius:13,
+          strokeColor:'#FFFFFF', strokeWidth:2
+        }}));
+        map.layers.add(new atlas.layer.SymbolLayer(source, 'labels', {{
+          filter:['==',['geometry-type'],'Point'],
+          textOptions: {{textField:['get','order'], color:'#FFFFFF', size:12, font:['StandardFont-Bold']}}
+        }}));
+        const popup = new atlas.Popup({{pixelOffset:[0,-18]}});
+        map.events.add('click', 'stops', event => {{
+          if (!event.shapes || !event.shapes.length) return;
+          const props = event.shapes[0].getProperties();
+          popup.setOptions({{
+            position:event.shapes[0].getCoordinates(),
+            content:`<div style="padding:10px"><strong>${{props.order}}</strong> — ${{props.label}}</div>`
+          }}).open(map);
+        }});
+        const bounds = atlas.data.BoundingBox.fromPositions([
+          ...data.points.map(p => [p.longitude,p.latitude]), ...data.path
+        ]);
+        map.setCamera({{bounds, padding:55, maxZoom:14}});
+      }});
+    </script></body></html>
+    """
+    components.html(document, height=height, scrolling=False)
+
+
+def render_map(plan: RoutePlan, subscription_key: str | None, height: int = 560) -> None:
+    if subscription_key:
+        render_azure_map(plan, subscription_key, height=height)
+    else:
+        render_fallback_map(plan, height=height)

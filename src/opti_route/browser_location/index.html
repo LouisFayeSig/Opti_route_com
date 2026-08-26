@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body { margin: 0; font-family: Arial, sans-serif; color: #263238; }
+    button { width: 100%; min-height: 40px; border: 1px solid #1565c0; border-radius: 8px;
+      background: #fff; color: #1565c0; font-weight: 600; cursor: pointer; }
+    button:hover { background: #eef5fc; }
+    #status { margin-top: 7px; font-size: 12px; color: #546e7a; }
+  </style>
+</head>
+<body>
+  <button id="locate">📍 Utiliser ma position actuelle</button>
+  <div id="status"></div>
+  <script>
+    const send = (type, extra = {}) => window.parent.postMessage({
+      isStreamlitMessage: true, type, ...extra
+    }, '*');
+    send('streamlit:componentReady', {apiVersion: 1});
+    send('streamlit:setFrameHeight', {height: 68});
+    document.getElementById('locate').addEventListener('click', () => {
+      const status = document.getElementById('status');
+      if (!navigator.geolocation) {
+        status.textContent = "La géolocalisation n'est pas prise en charge par ce navigateur.";
+        return;
+      }
+      status.textContent = 'Localisation en cours…';
+      navigator.geolocation.getCurrentPosition(position => {
+        const value = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          capturedAt: new Date().toISOString()
+        };
+        status.textContent = `Position obtenue (précision ±${Math.round(value.accuracy)} m)`;
+        send('streamlit:setComponentValue', {value, dataType: 'json'});
+      }, error => {
+        const messages = {
+          1: 'Autorisation refusée. Activez la localisation dans le navigateur.',
+          2: 'Position indisponible.',
+          3: 'La localisation a expiré. Réessayez.'
+        };
+        status.textContent = messages[error.code] || 'Impossible de vous localiser.';
+      }, {enableHighAccuracy: true, timeout: 15000, maximumAge: 60000});
+    });
+  </script>
+</body>
+</html>
