@@ -7,13 +7,16 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - import d'un portefeuille aux formats CSV, XLS, XLSX, XLSM ou XLSB ;
 - détection automatique des colonnes et correspondance manuelle si leurs noms varient ;
 - choix de la feuille et de la ligne d'en-tête ;
-- filtrage du portefeuille par commercial ;
+- utilisation possible d'une simple liste d'adresses, sans nom de client ni commercial ;
+- filtrage facultatif du portefeuille par commercial ;
+- sélection ou désélection individuelle des adresses avant le calcul ;
 - départ depuis la position du navigateur, une adresse ou un client existant ;
 - cache SQLite des adresses géocodées ;
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - export Excel et CSV, PDF avec capture cartographique, ainsi que partage vers Google Maps ;
+- noms d'exports horodatés pour éviter les doublons ;
 - mode d'estimation local lorsque la clé Azure Maps n'est pas configurée.
 
 ## Installation
@@ -69,7 +72,7 @@ Les intitulés sont libres. L'application tente de reconnaître automatiquement 
 | Pays | `Pays`, `Country` |
 | Coordonnées | `Latitude` / `Longitude`, `Lat` / `Lon` |
 
-Le code ou le nom du client est obligatoire. Les coordonnées sont facultatives : les lignes qui n'en possèdent pas sont géocodées via Azure Maps et mises en cache dans `.cache/geocoding.sqlite3`.
+Une colonne d'adresse suffit. Le code, le nom du client et le commercial sont facultatifs ; des identifiants et libellés sont générés lorsque ces champs manquent. Les coordonnées sont également facultatives : les lignes qui n'en possèdent pas sont géocodées via Azure Maps et mises en cache dans `.cache/geocoding.sqlite3`.
 
 ## Tests
 

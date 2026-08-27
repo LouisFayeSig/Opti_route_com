@@ -50,11 +50,14 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "address": (
         "address",
         "adresse",
+        "adresse_complete",
+        "adresse_postale",
         "adresse_1",
         "adresse1",
         "adr1",
         "rue",
         "voie",
+        "localisation",
         "adr1_compte",
     ),
     "address_2": (
@@ -165,10 +168,15 @@ def standardize_clients(
                 if source is not None and source in valid_columns
             }
         )
-    if "client_name" not in mapping and "client_id" not in mapping:
+    has_identity = "client_name" in mapping or "client_id" in mapping
+    has_location = "address" in mapping or {
+        "latitude",
+        "longitude",
+    }.issubset(mapping)
+    if not has_identity and not has_location:
         available = ", ".join(map(str, raw.columns))
         raise ClientDataError(
-            "Impossible d'identifier la colonne du nom ou du code client. "
+            "Impossible d'identifier une colonne d'adresse, de coordonnées, de nom ou de code client. "
             f"Colonnes détectées : {available}"
         )
 
@@ -177,12 +185,6 @@ def standardize_clients(
         source_column = mapping.get(target)
         clients[target] = raw[source_column] if source_column else pd.NA
 
-    if clients["client_name"].isna().all():
-        clients["client_name"] = clients["client_id"]
-    clients["client_name"] = clients["client_name"].fillna(clients["client_id"])
-    clients["client_id"] = clients["client_id"].fillna(
-        pd.Series([f"CLIENT-{position + 1}" for position in range(len(clients))], index=clients.index)
-    )
     clients["salesperson"] = clients["salesperson"].fillna("Tous")
     clients["country"] = clients["country"].fillna("France")
 
@@ -200,6 +202,14 @@ def standardize_clients(
     for column in text_columns:
         clients[column] = clients[column].astype("string").str.strip()
 
+    generated_ids = pd.Series(
+        [f"ADRESSE-{position + 1}" for position in range(len(clients))],
+        index=clients.index,
+        dtype="string",
+    )
+    clients["client_id"] = clients["client_id"].replace("", pd.NA).fillna(generated_ids)
+    clients["country"] = clients["country"].replace("", pd.NA).fillna("France")
+
     # Excel transforme parfois les codes postaux en nombres décimaux.
     clients["postal_code"] = clients["postal_code"].str.replace(r"\.0$", "", regex=True)
     clients["latitude"] = pd.to_numeric(
@@ -213,6 +223,12 @@ def standardize_clients(
     ].apply(
         lambda row: ", ".join(str(value) for value in row if pd.notna(value) and str(value).strip()),
         axis=1,
+    )
+    clients["client_name"] = (
+        clients["client_name"]
+        .replace("", pd.NA)
+        .fillna(clients["full_address"].replace("", pd.NA))
+        .fillna(clients["client_id"])
     )
     clients = clients[clients["client_name"].notna()].reset_index(drop=True)
     if clients.empty:

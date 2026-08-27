@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pandas as pd
 
@@ -34,10 +35,15 @@ class RoutePlan:
     omitted_for_duration: int = 0
     warnings: list[str] = field(default_factory=list)
     map_image: bytes | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
 
     @property
     def visit_count(self) -> int:
         return len(self.table)
+
+    @property
+    def export_stem(self) -> str:
+        return f"tournee_commerciale_{self.created_at:%Y%m%d_%H%M%S}"
 
     def itinerary_table(self) -> pd.DataFrame:
         """Ajoute le départ et, le cas échéant, le retour au détail des visites."""

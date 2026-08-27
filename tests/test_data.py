@@ -58,6 +58,22 @@ def test_manual_mapping_accepts_unknown_column_names() -> None:
     assert clients.loc[0, "city"] == "Rouen"
 
 
+def test_address_only_file_does_not_require_client_or_salesperson() -> None:
+    raw = pd.DataFrame(
+        {
+            "Adresse complète": ["8 rue Ampère"],
+            "Code postal": ["14120"],
+            "Ville": ["Mondeville"],
+        }
+    )
+
+    clients = standardize_clients(raw)
+
+    assert clients.loc[0, "client_id"] == "ADRESSE-1"
+    assert clients.loc[0, "client_name"] == "8 rue Ampère, 14120, Mondeville, France"
+    assert clients.loc[0, "salesperson"] == "Tous"
+
+
 def test_reads_workbook_sheet_and_custom_header_row() -> None:
     workbook = BytesIO()
     with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
@@ -75,4 +91,3 @@ def test_reads_workbook_sheet_and_custom_header_row() -> None:
         header_row=1,
     )
     assert clients["client_name"].tolist() == ["Alpha"]
-

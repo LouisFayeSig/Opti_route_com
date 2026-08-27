@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 from opti_route.exporting import csv_bytes, excel_bytes, google_maps_url, pdf_bytes
@@ -56,4 +58,5 @@ def test_planner_builds_route_and_exports() -> None:
     pdf = pdf_bytes(plan)
     assert pdf.startswith(b"%PDF")
     assert b"/Subtype /Image" in pdf
+    assert re.fullmatch(r"tournee_commerciale_\d{8}_\d{6}", plan.export_stem)
     assert "google.com/maps/dir" in google_maps_url(plan)

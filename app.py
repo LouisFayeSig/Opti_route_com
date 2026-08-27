@@ -79,7 +79,7 @@ browser_location = components.declare_component(
 FIELD_LABELS = {
     "client_id": "Code client",
     "client_name": "Nom du client",
-    "salesperson": "Commercial",
+    "salesperson": "Commercial (optionnel)",
     "address": "Adresse / rue",
     "address_2": "Complément d'adresse 1",
     "address_3": "Complément d'adresse 2",
@@ -186,9 +186,19 @@ def _prepare_clients() -> tuple[pd.DataFrame | None, str | None]:
         mapping_signature = "|".join(str(mapping.get(target)) for target in ALIASES)
         signature = f"{file_hash}:{sheet}:{header_line}:{mapping_signature}"
         geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
+        real_salespeople = {
+            value
+            for value in clients["salesperson"].dropna().astype(str)
+            if value.strip() and value != "Tous"
+        }
+        commercial_status = (
+            f"{len(real_salespeople):,} commerciaux" if real_salespeople else "aucun commercial requis"
+        )
         st.caption(
-            f"{len(clients):,} clients chargés · {geocoded:,} déjà géocodés · "
-            f"{clients['salesperson'].nunique():,} commerciaux".replace(",", " ")
+            (
+                f"{len(clients):,} adresses chargées · {geocoded:,} déjà géocodées · "
+                f"{commercial_status}"
+            ).replace(",", " ")
         )
         return clients, signature
 
@@ -259,21 +269,21 @@ def _render_results(plan: RoutePlan) -> None:
         export_columns[0].download_button(
             "Télécharger Excel",
             data=excel_bytes(plan),
-            file_name="tournee_commerciale.xlsx",
+            file_name=f"{plan.export_stem}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
         export_columns[1].download_button(
             "Télécharger CSV",
             data=csv_bytes(plan),
-            file_name="tournee_commerciale.csv",
+            file_name=f"{plan.export_stem}.csv",
             mime="text/csv",
             use_container_width=True,
         )
         export_columns[2].download_button(
             "Télécharger PDF",
             data=pdf_bytes(plan),
-            file_name="tournee_commerciale.pdf",
+            file_name=f"{plan.export_stem}.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
@@ -306,21 +316,86 @@ if st.session_state.get("source_signature") != source_signature:
     st.session_state.pop("route_plan", None)
 
 salespeople = sorted(
-    value for value in clients["salesperson"].dropna().astype(str).unique() if value.strip()
+    value
+    for value in clients["salesperson"].dropna().astype(str).unique()
+    if value.strip() and value != "Tous"
 )
-if not salespeople:
-    salespeople = ["Tous"]
 
 controls_column, map_column = st.columns([0.34, 0.66], gap="large")
 with controls_column:
     st.subheader("Préparer la tournée")
-    salesperson = st.selectbox("Commercial", salespeople)
-    assigned_clients = clients[
-        clients["salesperson"].astype(str) == salesperson
-    ].copy()
-    if salesperson == "Tous":
+    filter_by_salesperson = st.toggle(
+        "Filtrer par commercial",
+        value=False,
+        disabled=not salespeople,
+        help="Facultatif : sans filtre, toutes les adresses importées sont proposées.",
+    )
+    active_salesperson: str | None = None
+    if filter_by_salesperson and salespeople:
+        active_salesperson = st.selectbox("Commercial", salespeople)
+        assigned_clients = clients[
+            clients["salesperson"].astype(str) == active_salesperson
+        ].copy()
+    else:
         assigned_clients = clients.copy()
-    st.caption(f"{len(assigned_clients)} clients dans ce portefeuille")
+        if not salespeople:
+            st.caption("Aucune colonne commercial nécessaire : tout le fichier est utilisé.")
+    st.caption(f"{len(assigned_clients)} adresses disponibles")
+
+    selection_identifier = hashlib.sha1(
+        f"{source_signature}|{active_salesperson or 'TOUTES'}".encode()
+    ).hexdigest()[:12]
+    selection_default_key = f"selection_default_{selection_identifier}"
+    selection_version_key = f"selection_version_{selection_identifier}"
+    st.session_state.setdefault(selection_default_key, True)
+    st.session_state.setdefault(selection_version_key, 0)
+    select_column, deselect_column = st.columns(2)
+    if select_column.button(
+        "Tout sélectionner",
+        key=f"select_all_{selection_identifier}",
+        use_container_width=True,
+    ):
+        st.session_state[selection_default_key] = True
+        st.session_state[selection_version_key] += 1
+        st.rerun()
+    if deselect_column.button(
+        "Tout désélectionner",
+        key=f"deselect_all_{selection_identifier}",
+        use_container_width=True,
+    ):
+        st.session_state[selection_default_key] = False
+        st.session_state[selection_version_key] += 1
+        st.rerun()
+
+    selection_source = assigned_clients.reset_index(drop=True)
+    selection_table = pd.DataFrame(
+        {
+            "Sélectionner": st.session_state[selection_default_key],
+            "Client": selection_source["client_name"].astype(str),
+            "Ville": selection_source["city"].fillna("").astype(str),
+            "Adresse": selection_source["full_address"].fillna("").astype(str),
+        }
+    )
+    edited_selection = st.data_editor(
+        selection_table,
+        key=(
+            f"address_selection_{selection_identifier}_"
+            f"{st.session_state[selection_version_key]}"
+        ),
+        hide_index=True,
+        use_container_width=True,
+        height=min(300, max(145, 38 + 35 * len(selection_table))),
+        disabled=["Client", "Ville", "Adresse"],
+        column_config={
+            "Sélectionner": st.column_config.CheckboxColumn("Visiter", required=True, width="small"),
+            "Client": st.column_config.TextColumn("Client", width="medium"),
+            "Ville": st.column_config.TextColumn("Ville", width="small"),
+            "Adresse": st.column_config.TextColumn("Adresse", width="large"),
+        },
+    )
+    selected_mask = edited_selection["Sélectionner"].fillna(False).astype(bool).to_numpy()
+    selected_clients = selection_source.loc[selected_mask].copy()
+    st.caption(f"{len(selected_clients)} adresses sélectionnées")
 
     start_mode = st.radio(
         "Point de départ",
@@ -369,6 +444,8 @@ with controls_column:
     generate = st.button("Générer ma tournée", type="primary", use_container_width=True)
     if generate:
         try:
+            if selected_clients.empty:
+                raise PlanningError("Sélectionnez au moins une adresse à visiter.")
             cache = GeocodeCache(settings.geocode_cache_path)
             progress_bar = st.progress(0, text="Vérification des coordonnées clients…")
 
@@ -377,8 +454,16 @@ with controls_column:
                     position / max(total, 1), text=f"Géocodage {position}/{total} · {client_name}"
                 )
 
+            clients_to_geocode = selected_clients.copy()
+            if start_mode == "Client existant" and appointment_id is not None:
+                appointment_source = assigned_clients[
+                    assigned_clients["client_id"].astype(str) == appointment_id
+                ]
+                clients_to_geocode = pd.concat(
+                    [clients_to_geocode, appointment_source], ignore_index=True
+                ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
-                assigned_clients, azure_client, cache, progress=update_progress
+                clients_to_geocode, azure_client, cache, progress=update_progress
             )
             progress_bar.empty()
 
