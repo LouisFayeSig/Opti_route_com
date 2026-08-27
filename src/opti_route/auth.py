@@ -50,8 +50,8 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
     if not settings.auth_username or not settings.auth_password:
         _login_heading("L’authentification locale doit être configurée par l’administrateur.")
         st.error(
-            "Renseignez AUTH_USERNAME et AUTH_PASSWORD dans le fichier .env, "
-            "puis redémarrez Streamlit."
+            "Renseignez AUTH_USERNAME et AUTH_PASSWORD dans le fichier .env en local, "
+            "ou dans la section [app] des secrets Streamlit en déploiement, puis redémarrez."
         )
         st.stop()
 

@@ -79,6 +79,27 @@ versionné. En production, placer ces valeurs dans le gestionnaire de secrets de
 Streamlit active automatiquement ses protections CORS et XSRF lorsque cette configuration OIDC est
 présente.
 
+### Déploiement sur Streamlit Community Cloud
+
+Le fichier `.env` est local et ignoré par Git : il n'est donc jamais copié dans le conteneur Cloud.
+Dans l'application déployée, ouvrir **Settings → Secrets** et coller du TOML, par exemple pour le mode
+mot de passe :
+
+```toml
+[app]
+AUTH_MODE = "password"
+AUTH_USERNAME = "collaborateur"
+AUTH_PASSWORD = "choisir-un-mot-de-passe-long-et-unique"
+AZURE_MAPS_URI = "https://atlas.microsoft.com"
+AZURE_MAPS_SUBSCRIPTION_KEY = "votre-cle-azure-maps"
+MAP_RENDERER = "pydeck"
+```
+
+Pour Entra ID, utiliser `AUTH_MODE = "entra"` dans `[app]`, puis ajouter les sections `[auth]` et
+`[auth.microsoft]` fournies dans `.streamlit/secrets.toml.example`. Enregistrer les secrets et
+redémarrer l'application. Le code accepte également les mêmes noms au niveau racine des secrets,
+mais la section `[app]` est recommandée pour les regrouper.
+
 ## Lancement
 
 ```powershell

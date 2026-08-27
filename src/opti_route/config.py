@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,33 +25,63 @@ class Settings:
         return bool(self.azure_maps_key)
 
 
-def load_settings(project_root: Path | None = None) -> Settings:
+def _configured_value(
+    name: str,
+    secrets: Mapping[str, object] | None = None,
+    default: str | None = None,
+) -> str | None:
+    environment_value = os.getenv(name)
+    if environment_value is not None:
+        return environment_value
+
+    if secrets:
+        direct_value = secrets.get(name)
+        if direct_value is not None:
+            return str(direct_value)
+
+        app_section = secrets.get("app")
+        if isinstance(app_section, Mapping):
+            section_value = app_section.get(name)
+            if section_value is not None:
+                return str(section_value)
+    return default
+
+
+def load_settings(
+    project_root: Path | None = None,
+    secrets: Mapping[str, object] | None = None,
+) -> Settings:
     root = project_root or Path.cwd()
     load_dotenv(root / ".env", override=False)
 
     endpoint = (
-        os.getenv("AZURE_MAPS_ENDPOINT")
-        or os.getenv("AZURE_MAPS_URI")
+        _configured_value("AZURE_MAPS_ENDPOINT", secrets)
+        or _configured_value("AZURE_MAPS_URI", secrets)
         or "https://atlas.microsoft.com"
     ).rstrip("/")
-    key = os.getenv("AZURE_MAPS_SUBSCRIPTION_KEY") or os.getenv("AZURE_MAPS_KEY")
-    configured_file = os.getenv("CLIENTS_FILE")
+    key = _configured_value("AZURE_MAPS_SUBSCRIPTION_KEY", secrets) or _configured_value(
+        "AZURE_MAPS_KEY", secrets
+    )
+    configured_file = _configured_value("CLIENTS_FILE", secrets)
     clients_file = Path(configured_file) if configured_file else None
     if clients_file and not clients_file.is_absolute():
         clients_file = root / clients_file
 
-    cache_value = os.getenv("GEOCODE_CACHE_PATH", ".cache/geocoding.sqlite3")
+    cache_value = _configured_value(
+        "GEOCODE_CACHE_PATH", secrets, ".cache/geocoding.sqlite3"
+    )
+    assert cache_value is not None
     cache_path = Path(cache_value)
     if not cache_path.is_absolute():
         cache_path = root / cache_path
 
-    timeout = float(os.getenv("AZURE_MAPS_TIMEOUT_SECONDS", "30"))
-    map_renderer = os.getenv("MAP_RENDERER", "pydeck").strip().casefold()
+    timeout = float(_configured_value("AZURE_MAPS_TIMEOUT_SECONDS", secrets, "30") or "30")
+    map_renderer = (_configured_value("MAP_RENDERER", secrets, "pydeck") or "pydeck").strip().casefold()
     if map_renderer not in {"pydeck", "azure"}:
         map_renderer = "pydeck"
-    auth_mode = os.getenv("AUTH_MODE", "password").strip().casefold()
-    auth_username = os.getenv("AUTH_USERNAME")
-    auth_password = os.getenv("AUTH_PASSWORD")
+    auth_mode = (_configured_value("AUTH_MODE", secrets, "password") or "password").strip().casefold()
+    auth_username = _configured_value("AUTH_USERNAME", secrets)
+    auth_password = _configured_value("AUTH_PASSWORD", secrets)
     return Settings(
         azure_maps_endpoint=endpoint,
         azure_maps_key=key.strip() if key else None,

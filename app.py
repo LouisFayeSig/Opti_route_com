@@ -62,7 +62,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-settings = load_settings(PROJECT_ROOT)
+try:
+    runtime_secrets = st.secrets.to_dict()
+except FileNotFoundError:
+    runtime_secrets = {}
+settings = load_settings(PROJECT_ROOT, secrets=runtime_secrets)
 
 browser_location = components.declare_component(
     "opti_route_browser_location", path=str(SRC_ROOT / "opti_route" / "browser_location")
