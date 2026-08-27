@@ -15,6 +15,9 @@ class Settings:
     clients_file: Path | None
     map_renderer: str = "pydeck"
     request_timeout_seconds: float = 30.0
+    auth_mode: str = "password"
+    auth_username: str | None = None
+    auth_password: str | None = None
 
     @property
     def azure_maps_enabled(self) -> bool:
@@ -45,6 +48,9 @@ def load_settings(project_root: Path | None = None) -> Settings:
     map_renderer = os.getenv("MAP_RENDERER", "pydeck").strip().casefold()
     if map_renderer not in {"pydeck", "azure"}:
         map_renderer = "pydeck"
+    auth_mode = os.getenv("AUTH_MODE", "password").strip().casefold()
+    auth_username = os.getenv("AUTH_USERNAME")
+    auth_password = os.getenv("AUTH_PASSWORD")
     return Settings(
         azure_maps_endpoint=endpoint,
         azure_maps_key=key.strip() if key else None,
@@ -52,4 +58,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
         clients_file=clients_file,
         map_renderer=map_renderer,
         request_timeout_seconds=timeout,
+        auth_mode=auth_mode,
+        auth_username=auth_username.strip() if auth_username else None,
+        auth_password=auth_password if auth_password else None,
     )

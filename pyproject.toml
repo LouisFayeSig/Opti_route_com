@@ -9,16 +9,17 @@ description = "Optimisation de tournées commerciales avec Streamlit, Azure Maps
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "Authlib>=1.7.2,<2",
   "numpy>=2.0,<3",
   "openpyxl>=3.1,<4",
   "ortools>=9.12,<10",
   "pandas>=2.2,<3",
-  "Pillow>=10,<13",
+  "Pillow>=12.3,<13",
   "pyxlsb>=1.0,<2",
   "pydeck>=0.9,<1",
-  "python-dotenv>=1.0,<2",
+  "python-dotenv>=1.2.3,<2",
   "reportlab>=4.2,<5",
-  "requests>=2.32,<3",
+  "requests>=2.33,<3",
   "streamlit>=1.48,<2",
   "xlrd>=2.0,<3",
 ]

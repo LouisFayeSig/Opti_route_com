@@ -14,6 +14,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from opti_route.auth import render_account_controls, require_authentication
 from opti_route.azure_maps import AzureMapsClient, AzureMapsError
 from opti_route.cache import GeocodeCache
 from opti_route.config import load_settings
@@ -62,15 +63,6 @@ st.markdown(
 )
 
 settings = load_settings(PROJECT_ROOT)
-azure_client = (
-    AzureMapsClient(
-        settings.azure_maps_endpoint,
-        settings.azure_maps_key,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
-    if settings.azure_maps_enabled
-    else None
-)
 
 browser_location = components.declare_component(
     "opti_route_browser_location", path=str(SRC_ROOT / "opti_route" / "browser_location")
@@ -294,7 +286,18 @@ def _render_results(plan: RoutePlan) -> None:
         )
 
 
-title_column, status_column = st.columns([4, 1])
+authenticated_user = require_authentication(settings)
+azure_client = (
+    AzureMapsClient(
+        settings.azure_maps_endpoint,
+        settings.azure_maps_key,
+        timeout_seconds=settings.request_timeout_seconds,
+    )
+    if settings.azure_maps_enabled
+    else None
+)
+
+title_column, status_column, account_column = st.columns([3.7, 1, 1.2])
 with title_column:
     st.title("🧭 Opti Route Com")
     st.markdown(
@@ -306,6 +309,8 @@ with status_column:
         st.markdown('<span class="opti-badge opti-ok">● Azure Maps connecté</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span class="opti-badge opti-warn">● Mode estimation</span>', unsafe_allow_html=True)
+with account_column:
+    render_account_controls(authenticated_user)
 
 clients, source_signature = _prepare_clients()
 if clients is None:

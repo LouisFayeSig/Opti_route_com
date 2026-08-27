@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from urllib.parse import quote
 
+import pandas as pd
 from openpyxl.styles import Font, PatternFill
 from PIL import Image as PillowImage
 from PIL import ImageDraw
@@ -13,6 +14,8 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .planner import RoutePlan
+
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\x00", "＝", "＋", "－", "＠")
 
 
 def _export_table(plan: RoutePlan):
@@ -26,17 +29,39 @@ def _export_table(plan: RoutePlan):
     )
 
 
+def sanitize_spreadsheet_value(value):
+    """Force les chaînes pouvant être interprétées comme des formules à rester du texte."""
+    if not isinstance(value, str):
+        return value
+    candidate = value.lstrip(" ")
+    if candidate.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def _sanitize_spreadsheet_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    sanitized = frame.copy()
+    for column in sanitized.columns:
+        sanitized[column] = sanitized[column].map(sanitize_spreadsheet_value)
+    return sanitized
+
+
 def csv_bytes(plan: RoutePlan) -> bytes:
-    return _export_table(plan).to_csv(index=False, sep=";", decimal=",", lineterminator="\n").encode(
-        "utf-8-sig"
-    )
+    return _sanitize_spreadsheet_frame(_export_table(plan)).to_csv(
+        index=False,
+        sep=";",
+        decimal=",",
+        lineterminator="\n",
+    ).encode("utf-8-sig")
 
 
 def excel_bytes(plan: RoutePlan) -> bytes:
     output = io.BytesIO()
-    with __import__("pandas").ExcelWriter(output, engine="openpyxl") as writer:
-        _export_table(plan).to_excel(writer, sheet_name="Tournée", index=False)
-        summary = __import__("pandas").DataFrame(
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        _sanitize_spreadsheet_frame(_export_table(plan)).to_excel(
+            writer, sheet_name="Tournée", index=False
+        )
+        summary = pd.DataFrame(
             {
                 "Indicateur": [
                     "Départ",
@@ -56,7 +81,7 @@ def excel_bytes(plan: RoutePlan) -> bytes:
                 ],
             }
         )
-        summary.to_excel(writer, sheet_name="Synthèse", index=False)
+        _sanitize_spreadsheet_frame(summary).to_excel(writer, sheet_name="Synthèse", index=False)
         for sheet in writer.book.worksheets:
             for cell in sheet[1]:
                 cell.font = Font(bold=True, color="FFFFFF")

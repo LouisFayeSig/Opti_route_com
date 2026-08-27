@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import io
 import re
 
 import pandas as pd
+from openpyxl import load_workbook
 
-from opti_route.exporting import csv_bytes, excel_bytes, google_maps_url, pdf_bytes
+from opti_route.exporting import (
+    csv_bytes,
+    excel_bytes,
+    google_maps_url,
+    pdf_bytes,
+    sanitize_spreadsheet_value,
+)
 from opti_route.optimizer import optimize_route
 from opti_route.planner import StartPoint, build_route_plan
 
@@ -60,3 +68,70 @@ def test_planner_builds_route_and_exports() -> None:
     assert b"/Subtype /Image" in pdf
     assert re.fullmatch(r"tournee_commerciale_\d{8}_\d{6}", plan.export_stem)
     assert "google.com/maps/dir" in google_maps_url(plan)
+
+
+def test_spreadsheet_formula_prefixes_are_escaped() -> None:
+    dangerous_values = [
+        "=HYPERLINK(\"https://example.test\")",
+        "+1+1",
+        "-1+1",
+        "@SUM(1,1)",
+        "  =SUM(1,1)",
+        "＝SUM(1,1)",
+    ]
+
+    for value in dangerous_values:
+        assert sanitize_spreadsheet_value(value) == "'" + value
+    assert sanitize_spreadsheet_value("Client normal") == "Client normal"
+    assert sanitize_spreadsheet_value(-12.5) == -12.5
+
+
+def test_csv_and_excel_exports_keep_untrusted_values_as_text() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["A"],
+            "client_name": ["=HYPERLINK(\"https://example.test\")"],
+            "salesperson": ["Morgan"],
+            "address": ["Adresse A"],
+            "address_2": [pd.NA],
+            "address_3": [pd.NA],
+            "postal_code": ["14000"],
+            "city": ["@SUM(1,1)"],
+            "country": ["France"],
+            "latitude": [49.183],
+            "longitude": [-0.370],
+            "full_address": ["+Adresse A"],
+        }
+    )
+    plan = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "=Point de départ"),
+        radius_km=20,
+        max_visits=1,
+        max_duration_hours=4,
+        return_to_start=False,
+        objective="time",
+    )
+
+    csv_text = csv_bytes(plan).decode("utf-8-sig")
+    assert "'=HYPERLINK" in csv_text
+    assert "'@SUM" in csv_text
+    assert "'+Adresse A" in csv_text
+
+    workbook = load_workbook(io.BytesIO(excel_bytes(plan)), data_only=False)
+    route_sheet = workbook["Tournée"]
+    headers = [cell.value for cell in route_sheet[1]]
+    client_column = headers.index("Client") + 1
+    city_column = headers.index("Ville") + 1
+    address_column = headers.index("Adresse") + 1
+    client_cell = route_sheet.cell(row=3, column=client_column)
+    city_cell = route_sheet.cell(row=3, column=city_column)
+    address_cell = route_sheet.cell(row=3, column=address_column)
+    assert client_cell.value.startswith("'=HYPERLINK")
+    assert city_cell.value.startswith("'@SUM")
+    assert address_cell.value.startswith("'+Adresse")
+    assert client_cell.data_type == city_cell.data_type == address_cell.data_type == "s"
+
+    summary_sheet = workbook["Synthèse"]
+    assert summary_sheet["B2"].value == "'=Point de départ"
+    assert summary_sheet["B2"].data_type == "s"
