@@ -23,7 +23,7 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 
 ## Installation
 
-Python 3.11 ou plus récent est nécessaire.
+Une version Python 3.x comprise entre 3.11 inclus et 4.0 exclu est nécessaire.
 
 ```powershell
 python -m venv .venv
