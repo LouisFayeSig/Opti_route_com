@@ -30,6 +30,9 @@ dev = [
   "ruff>=0.12,<1",
 ]
 
+[tool.poetry]
+packages = [{ include = "opti_route", from = "src" }]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
