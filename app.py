@@ -14,23 +14,29 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from opti_route.auth import render_account_controls, require_authentication
+from opti_route.auth import AuthenticatedUser, render_account_controls, require_authentication
 from opti_route.azure_maps import AzureMapsClient, AzureMapsError
 from opti_route.cache import GeocodeCache
 from opti_route.config import load_settings
 from opti_route.data import (
     ALIASES,
     ClientDataError,
-    discover_client_files,
     list_sheet_names,
     read_tabular,
     standardize_clients,
     suggest_column_mapping,
+    validate_uploaded_file,
 )
 from opti_route.exporting import csv_bytes, excel_bytes, google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
 from opti_route.map_view import render_map
 from opti_route.planner import PlanningError, RoutePlan, StartPoint, build_route_plan
+from opti_route.storage import (
+    AppStore,
+    PortfolioMetadata,
+    RouteConfiguration,
+    StorageError,
+)
 
 st.set_page_config(
     page_title="Opti Route Com",
@@ -75,7 +81,7 @@ browser_location = components.declare_component(
 FIELD_LABELS = {
     "client_id": "Code client",
     "client_name": "Nom du client",
-    "salesperson": "Commercial (optionnel)",
+    "salesperson": "Commercial",
     "address": "Adresse / rue",
     "address_2": "Complément d'adresse 1",
     "address_3": "Complément d'adresse 2",
@@ -87,124 +93,196 @@ FIELD_LABELS = {
 }
 
 
-def _read_source_bytes() -> tuple[bytes, str] | None:
-    uploaded = st.file_uploader(
-        "Importer un portefeuille clients",
-        type=["csv", "xls", "xlsx", "xlsm", "xlsb"],
-        help="Formats acceptés : CSV, XLS, XLSX, XLSM et XLSB. Le fichier reste dans la session.",
-    )
-    if uploaded is not None:
-        return uploaded.getvalue(), uploaded.name
-
-    local_files = discover_client_files(PROJECT_ROOT)
-    if settings.clients_file and settings.clients_file.exists():
-        local_files = [settings.clients_file, *[path for path in local_files if path != settings.clients_file]]
-    if not local_files:
-        return None
-    selected = st.selectbox(
-        "Ou utiliser un fichier disponible sur le serveur",
-        options=local_files,
-        format_func=lambda path: path.name,
-    )
-    return selected.read_bytes(), selected.name
-
-
-def _prepare_clients() -> tuple[pd.DataFrame | None, str | None]:
-    with st.expander("1 · Importer et contrôler les données clients", expanded=True):
-        source = _read_source_bytes()
-        if source is None:
-            st.info("Importez un fichier clients pour commencer.")
-            return None, None
-        file_bytes, filename = source
-        file_hash = hashlib.sha256(file_bytes).hexdigest()[:12]
-        suffix = Path(filename).suffix.casefold()
-
-        sheet_column, header_column = st.columns(2)
-        try:
-            sheets = list_sheet_names(io.BytesIO(file_bytes), filename=filename)
-        except Exception as exc:
-            st.error(f"Impossible de lire le classeur : {exc}")
-            return None, None
-        with sheet_column:
-            sheet = st.selectbox(
-                "Feuille",
-                sheets,
-                disabled=suffix == ".csv",
-                key=f"sheet_{file_hash}",
-            )
-        with header_column:
-            header_line = st.number_input(
-                "Ligne contenant les en-têtes",
-                min_value=1,
-                max_value=100,
-                value=1,
-                step=1,
-                key=f"header_{file_hash}",
-            )
-        try:
-            raw = read_tabular(
-                io.BytesIO(file_bytes),
-                filename=filename,
-                sheet_name=sheet if suffix != ".csv" else 0,
-                header_row=int(header_line) - 1,
-            )
-        except Exception as exc:
-            st.error(f"Lecture impossible : {exc}")
-            return None, None
-
-        suggestions = suggest_column_mapping(raw.columns)
-        columns = [str(column) for column in raw.columns]
-        options: list[str | None] = [None, *columns]
-        mapping: dict[str, str | None] = {}
-        with st.expander("Correspondance des colonnes", expanded=False):
+def _admin_import_panel(
+    store: AppStore,
+    user: AuthenticatedUser,
+    current_clients: pd.DataFrame | None,
+    metadata: PortfolioMetadata | None,
+) -> None:
+    if current_clients is not None:
+        st.success(f"Portefeuille actif : {len(current_clients)} clients.")
+        if metadata is not None:
             st.caption(
-                "Les correspondances sont proposées automatiquement. Corrigez-les si votre fichier utilise d'autres intitulés."
+                f"Source : {metadata.source_name} · Importé par {metadata.imported_by} "
+                f"le {metadata.imported_at.replace('T', ' ')}"
             )
-            mapping_columns = st.columns(3)
-            for position, target in enumerate(ALIASES):
-                suggested = suggestions.get(target)
-                default_index = options.index(suggested) if suggested in options else 0
-                with mapping_columns[position % 3]:
-                    mapping[target] = st.selectbox(
-                        FIELD_LABELS[target],
-                        options,
-                        index=default_index,
-                        format_func=lambda value: "— Non renseigné —" if value is None else value,
-                        key=f"mapping_{file_hash}_{sheet}_{header_line}_{target}",
-                    )
-            st.dataframe(raw.head(8), use_container_width=True, hide_index=True, height=240)
+    uploaded = st.file_uploader(
+        "Importer et remplacer le portefeuille clients",
+        type=["csv", "xls", "xlsx", "xlsm", "xlsb"],
+        help=(
+            "20 Mo maximum. Le fichier brut n'est pas conservé : seules les données "
+            "normalisées nécessaires à la tournée sont stockées."
+        ),
+        key="admin_portfolio_upload",
+    )
+    if uploaded is None:
+        return
 
-        try:
-            clients = standardize_clients(raw, column_mapping=mapping)
-        except ClientDataError as exc:
-            st.error(str(exc))
-            return None, None
-        mapping_signature = "|".join(str(mapping.get(target)) for target in ALIASES)
-        signature = f"{file_hash}:{sheet}:{header_line}:{mapping_signature}"
-        geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
-        real_salespeople = {
-            value
-            for value in clients["salesperson"].dropna().astype(str)
-            if value.strip() and value != "Tous"
-        }
-        commercial_status = (
-            f"{len(real_salespeople):,} commerciaux" if real_salespeople else "aucun commercial requis"
+    file_bytes = uploaded.getvalue()
+    try:
+        validate_uploaded_file(file_bytes, uploaded.name)
+        sheets = list_sheet_names(io.BytesIO(file_bytes), filename=uploaded.name)
+    except (ClientDataError, ValueError) as exc:
+        st.error(str(exc))
+        return
+
+    file_hash = hashlib.sha256(file_bytes).hexdigest()[:12]
+    suffix = Path(uploaded.name).suffix.casefold()
+    sheet_column, header_column = st.columns(2)
+    sheet = sheet_column.selectbox(
+        "Feuille",
+        sheets,
+        disabled=suffix == ".csv",
+        key=f"admin_sheet_{file_hash}",
+    )
+    header_line = header_column.number_input(
+        "Ligne contenant les en-têtes",
+        min_value=1,
+        max_value=100,
+        value=1,
+        step=1,
+        key=f"admin_header_{file_hash}",
+    )
+    try:
+        raw = read_tabular(
+            io.BytesIO(file_bytes),
+            filename=uploaded.name,
+            sheet_name=sheet if suffix != ".csv" else 0,
+            header_row=int(header_line) - 1,
         )
+        if len(raw) > 50_000 or len(raw.columns) > 200:
+            raise ClientDataError("Le fichier est limité à 50 000 lignes et 200 colonnes.")
+    except Exception as exc:
+        st.error(f"Lecture impossible : {exc}")
+        return
+
+    suggestions = suggest_column_mapping(raw.columns)
+    columns = [str(column) for column in raw.columns]
+    options: list[str | None] = [None, *columns]
+    mapping: dict[str, str | None] = {}
+    with st.expander("Correspondance des colonnes", expanded=True):
         st.caption(
-            (
-                f"{len(clients):,} adresses chargées · {geocoded:,} déjà géocodées · "
-                f"{commercial_status}"
-            ).replace(",", " ")
+            "Vérifiez les correspondances proposées. Le commercial est obligatoire pour chaque ligne."
         )
-        return clients, signature
+        mapping_columns = st.columns(3)
+        for position, target in enumerate(ALIASES):
+            suggested = suggestions.get(target)
+            default_index = options.index(suggested) if suggested in options else 0
+            with mapping_columns[position % 3]:
+                mapping[target] = st.selectbox(
+                    FIELD_LABELS[target],
+                    options,
+                    index=default_index,
+                    format_func=lambda value: "— Non renseigné —" if value is None else value,
+                    key=f"admin_mapping_{file_hash}_{sheet}_{header_line}_{target}",
+                )
+        st.dataframe(raw.head(8), use_container_width=True, hide_index=True, height=240)
+
+    try:
+        clients = standardize_clients(raw, column_mapping=mapping)
+        salespeople = clients["salesperson"].fillna("").astype(str).str.strip()
+        missing_salesperson_count = int((salespeople.eq("") | salespeople.eq("Tous")).sum())
+        if missing_salesperson_count:
+            raise ClientDataError(
+                f"{missing_salesperson_count} ligne(s) n'ont pas de commercial. "
+                "Associez la colonne correspondante avant d'enregistrer."
+            )
+    except ClientDataError as exc:
+        st.error(str(exc))
+        return
+
+    geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
+    commercial_count = clients["salesperson"].nunique()
+    st.caption(
+        f"{len(clients)} clients · {commercial_count} commerciaux · {geocoded} déjà géocodés"
+    )
+    if st.button(
+        "Enregistrer ce portefeuille",
+        type="primary",
+        use_container_width=True,
+        key=f"save_portfolio_{file_hash}_{sheet}_{header_line}",
+    ):
+        try:
+            store.save_clients(
+                clients,
+                source_name=uploaded.name,
+                imported_by=user.display_name,
+            )
+        except StorageError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.pop("route_plan", None)
+            st.success("Le portefeuille sécurisé a été remplacé.")
+            st.rerun()
 
 
-def _geocode_start_address(address: str, cache: GeocodeCache) -> StartPoint:
+def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) -> None:
+    st.caption(
+        "Ces contraintes sont communes à tous les utilisateurs et modifiables ici uniquement."
+    )
+    with st.form("admin_route_configuration"):
+        max_visits = st.slider(
+            "Nombre maximal de visites",
+            min_value=1,
+            max_value=10,
+            value=configuration.max_visits,
+        )
+        radius_km = st.select_slider(
+            "Rayon maximal",
+            options=[10, 20, 30, 50, 100],
+            value=configuration.radius_km,
+            format_func=lambda value: f"{value} km",
+        )
+        return_to_start = st.toggle(
+            "Retour au point de départ par défaut",
+            value=configuration.return_to_start,
+            help="Une adresse d'arrivée saisie par l'utilisateur remplace ce comportement.",
+        )
+        submitted = st.form_submit_button(
+            "Enregistrer les paramètres",
+            type="primary",
+            use_container_width=True,
+        )
+    if submitted:
+        try:
+            store.save_route_configuration(
+                RouteConfiguration(
+                    radius_km=int(radius_km),
+                    max_visits=int(max_visits),
+                    return_to_start=bool(return_to_start),
+                )
+            )
+        except StorageError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.pop("route_plan", None)
+            st.success("Les paramètres ont été enregistrés.")
+            st.rerun()
+
+
+def _render_admin_panel(
+    store: AppStore,
+    user: AuthenticatedUser,
+    clients: pd.DataFrame | None,
+    metadata: PortfolioMetadata | None,
+    configuration: RouteConfiguration,
+) -> None:
+    with st.expander("⚙️ Administration", expanded=clients is None):
+        portfolio_tab, settings_tab = st.tabs(["Portefeuille clients", "Contraintes"])
+        with portfolio_tab:
+            _admin_import_panel(store, user, clients, metadata)
+        with settings_tab:
+            _admin_settings_panel(store, configuration)
+
+
+def _geocode_address(address: str, cache: GeocodeCache, point_name: str) -> StartPoint:
     cached = cache.get(address)
     if cached:
         return StartPoint(cached.latitude, cached.longitude, cached.formatted_address)
     if azure_client is None:
-        raise PlanningError("Configurez AZURE_MAPS_SUBSCRIPTION_KEY pour géocoder l'adresse de départ.")
+        raise PlanningError(
+            f"Configurez AZURE_MAPS_SUBSCRIPTION_KEY pour géocoder l'adresse {point_name}."
+        )
     try:
         result = azure_client.geocode(address)
     except AzureMapsError as exc:
@@ -213,21 +291,56 @@ def _geocode_start_address(address: str, cache: GeocodeCache) -> StartPoint:
     return StartPoint(result.latitude, result.longitude, result.formatted_address)
 
 
+def _address_fields(prefix: str, title: str) -> list[str]:
+    st.markdown(f"##### {title}")
+    street = st.text_input(
+        "Rue et numéro",
+        placeholder="12 rue de la Paix",
+        key=f"{prefix}_street",
+    )
+    postal_column, city_column = st.columns([0.38, 0.62])
+    postal_code = postal_column.text_input(
+        "Code postal",
+        placeholder="14000",
+        key=f"{prefix}_postal_code",
+    )
+    city = city_column.text_input(
+        "Ville",
+        placeholder="Caen",
+        key=f"{prefix}_city",
+    )
+    country = st.text_input("Pays", value="France", key=f"{prefix}_country")
+    return [street, postal_code, city, country]
+
+
+def _validated_address(parts: list[str], point_name: str) -> str:
+    if not parts[0].strip() or not parts[2].strip():
+        raise PlanningError(f"Renseignez au minimum la rue et la ville {point_name}.")
+    return ", ".join(part.strip() for part in parts if part.strip())
+
+
 def _format_duration(seconds: int) -> str:
     hours, remainder = divmod(round(seconds / 60), 60)
     return f"{hours} h {remainder:02d}" if hours else f"{remainder} min"
 
 
 def _render_plan_summary(plan: RoutePlan) -> None:
-    st.info(f"**Point de départ :** {plan.start.label}", icon="📍")
+    destination_label = (
+        plan.end.label
+        if plan.end is not None
+        else plan.start.label
+        if plan.return_to_start
+        else "Dernière entreprise visitée"
+    )
+    st.info(
+        f"**Départ :** {plan.start.label}  \n**Arrivée :** {destination_label}",
+        icon="📍",
+    )
     metric_columns = st.columns(3)
     metric_columns[0].metric("Distance totale", f"{plan.total_distance_m / 1000:.1f} km")
     metric_columns[1].metric("Temps de conduite", _format_duration(plan.total_duration_s))
     metric_columns[2].metric("Clients à visiter", plan.visit_count)
-    st.caption(
-        f"Calcul : {plan.provider} · {plan.candidates_in_radius} clients dans le rayon"
-        + (f" · {plan.omitted_for_duration} retirés par la contrainte de durée" if plan.omitted_for_duration else "")
-    )
+    st.caption(f"Calcul : {plan.provider} · {plan.candidates_in_radius} clients dans le rayon")
     render_map(
         plan,
         settings.azure_maps_key,
@@ -301,7 +414,7 @@ azure_client = (
     else None
 )
 
-title_column, status_column, account_column = st.columns([3.7, 1, 1.2])
+title_column, status_column, account_column = st.columns([3.7, 1, 1.35])
 with title_column:
     st.title("🧭 Opti Route Com")
     st.markdown(
@@ -310,49 +423,71 @@ with title_column:
     )
 with status_column:
     if settings.azure_maps_enabled:
-        st.markdown('<span class="opti-badge opti-ok">● Azure Maps connecté</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<span class="opti-badge opti-ok">● Azure Maps connecté</span>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown('<span class="opti-badge opti-warn">● Mode estimation</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<span class="opti-badge opti-warn">● Mode estimation</span>',
+            unsafe_allow_html=True,
+        )
 with account_column:
     render_account_controls(authenticated_user)
 
-clients, source_signature = _prepare_clients()
-if clients is None:
+try:
+    store = AppStore(settings.app_storage_path)
+    clients, portfolio_metadata = store.load_clients()
+    route_configuration = store.load_route_configuration()
+except StorageError as exc:
+    st.error(str(exc))
     st.stop()
 
-if st.session_state.get("source_signature") != source_signature:
-    st.session_state["source_signature"] = source_signature
-    st.session_state.pop("route_plan", None)
+if authenticated_user.is_admin:
+    _render_admin_panel(
+        store,
+        authenticated_user,
+        clients,
+        portfolio_metadata,
+        route_configuration,
+    )
+
+if clients is None or portfolio_metadata is None:
+    if authenticated_user.is_admin:
+        st.warning("Aucun portefeuille actif. Importez-en un depuis le panneau Administration.")
+    else:
+        st.info("Aucun portefeuille clients n'est disponible. Contactez l'administrateur.")
+    st.stop()
 
 salespeople = sorted(
     value
     for value in clients["salesperson"].dropna().astype(str).unique()
     if value.strip() and value != "Tous"
 )
+if not salespeople:
+    st.error(
+        "Le portefeuille actif ne contient aucun commercial exploitable. "
+        "L'administrateur doit importer un fichier corrigé."
+    )
+    st.stop()
 
-controls_column, map_column = st.columns([0.34, 0.66], gap="large")
+source_signature = (
+    f"{portfolio_metadata.digest}:{route_configuration.radius_km}:"
+    f"{route_configuration.max_visits}:{route_configuration.return_to_start}"
+)
+if st.session_state.get("source_signature") != source_signature:
+    st.session_state["source_signature"] = source_signature
+    st.session_state.pop("route_plan", None)
+
+controls_column, map_column = st.columns([0.36, 0.64], gap="large")
 with controls_column:
     st.subheader("Préparer la tournée")
-    filter_by_salesperson = st.toggle(
-        "Filtrer par commercial",
-        value=False,
-        disabled=not salespeople,
-        help="Facultatif : sans filtre, toutes les adresses importées sont proposées.",
-    )
-    active_salesperson: str | None = None
-    if filter_by_salesperson and salespeople:
-        active_salesperson = st.selectbox("Commercial", salespeople)
-        assigned_clients = clients[
-            clients["salesperson"].astype(str) == active_salesperson
-        ].copy()
-    else:
-        assigned_clients = clients.copy()
-        if not salespeople:
-            st.caption("Aucune colonne commercial nécessaire : tout le fichier est utilisé.")
-    st.caption(f"{len(assigned_clients)} adresses disponibles")
+    active_salesperson = st.selectbox("Commercial", salespeople)
+    assigned_clients = clients[clients["salesperson"].astype(str) == active_salesperson].copy()
+    st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
 
     selection_identifier = hashlib.sha1(
-        f"{source_signature}|{active_salesperson or 'TOUTES'}".encode()
+        f"{source_signature}|{active_salesperson}".encode()
     ).hexdigest()[:12]
     selection_default_key = f"selection_default_{selection_identifier}"
     selection_version_key = f"selection_version_{selection_identifier}"
@@ -380,31 +515,30 @@ with controls_column:
     selection_table = pd.DataFrame(
         {
             "Sélectionner": st.session_state[selection_default_key],
-            "Client": selection_source["client_name"].astype(str),
+            "Entreprise": selection_source["client_name"].astype(str),
             "Ville": selection_source["city"].fillna("").astype(str),
             "Adresse": selection_source["full_address"].fillna("").astype(str),
         }
     )
     edited_selection = st.data_editor(
         selection_table,
-        key=(
-            f"address_selection_{selection_identifier}_"
-            f"{st.session_state[selection_version_key]}"
-        ),
+        key=(f"company_selection_{selection_identifier}_{st.session_state[selection_version_key]}"),
         hide_index=True,
         use_container_width=True,
         height=min(300, max(145, 38 + 35 * len(selection_table))),
-        disabled=["Client", "Ville", "Adresse"],
+        disabled=["Entreprise", "Ville", "Adresse"],
         column_config={
-            "Sélectionner": st.column_config.CheckboxColumn("Visiter", required=True, width="small"),
-            "Client": st.column_config.TextColumn("Client", width="medium"),
+            "Sélectionner": st.column_config.CheckboxColumn(
+                "Visiter", required=True, width="small"
+            ),
+            "Entreprise": st.column_config.TextColumn("Entreprise", width="medium"),
             "Ville": st.column_config.TextColumn("Ville", width="small"),
             "Adresse": st.column_config.TextColumn("Adresse", width="large"),
         },
     )
     selected_mask = edited_selection["Sélectionner"].fillna(False).astype(bool).to_numpy()
     selected_clients = selection_source.loc[selected_mask].copy()
-    st.caption(f"{len(selected_clients)} adresses sélectionnées")
+    st.caption(f"{len(selected_clients)} entreprises sélectionnées")
 
     start_mode = st.radio(
         "Point de départ",
@@ -412,7 +546,7 @@ with controls_column:
         horizontal=True,
     )
     location_value = None
-    address_parts: list[str] = []
+    start_address_parts: list[str] = []
     appointment_id: str | None = None
     if start_mode == "Ma position":
         location_value = browser_location(key="browser_geolocation", default=None)
@@ -422,12 +556,7 @@ with controls_column:
                 icon="📍",
             )
     elif start_mode == "Adresse personnalisée":
-        street = st.text_input("Rue et numéro", placeholder="12 rue de la Paix")
-        postal_column, city_column = st.columns([0.38, 0.62])
-        postal_code = postal_column.text_input("Code postal", placeholder="14000")
-        city = city_column.text_input("Ville", placeholder="Caen")
-        country = st.text_input("Pays", value="France")
-        address_parts = [street, postal_code, city, country]
+        start_address_parts = _address_fields("start", "Adresse de départ")
     else:
         appointment_options = assigned_clients.copy()
         appointment_options["display"] = (
@@ -442,25 +571,37 @@ with controls_column:
         )
         appointment_id = str(appointment_options.at[selected_appointment, "client_id"])
 
-    st.markdown("##### Contraintes")
-    visits_label = "Visites complémentaires" if start_mode == "Client existant" else "Nombre maximal de visites"
-    max_visits = st.select_slider(visits_label, options=[5, 10, 15, 20], value=10)
-    radius_km = st.select_slider("Rayon maximal", options=[10, 20, 30, 50, 100], value=30, format_func=lambda x: f"{x} km")
-    duration_hours = st.segmented_control("Durée maximale", options=[4, 6, 8], default=8, format_func=lambda x: f"{x} h")
-    return_to_start = st.toggle("Retour au point de départ", value=True)
-    objective_label = st.radio("Optimiser", ["Le temps", "La distance"], horizontal=True)
+    custom_arrival = st.toggle("Utiliser une adresse d'arrivée spécifique", value=False)
+    arrival_address_parts: list[str] = []
+    if custom_arrival:
+        arrival_address_parts = _address_fields("arrival", "Adresse d'arrivée")
+
+    with st.container(border=True):
+        st.markdown("##### Contraintes définies par l'administrateur")
+        st.caption(
+            f"Maximum : **{route_configuration.max_visits} visite(s)** · "
+            f"Rayon : **{route_configuration.radius_km} km** · "
+            + (
+                "**retour au départ**"
+                if route_configuration.return_to_start
+                else "**arrivée à la dernière visite**"
+            )
+        )
+        if custom_arrival:
+            st.caption("L'adresse d'arrivée spécifique remplace le retour au point de départ.")
 
     generate = st.button("Générer ma tournée", type="primary", use_container_width=True)
     if generate:
         try:
             if selected_clients.empty:
-                raise PlanningError("Sélectionnez au moins une adresse à visiter.")
+                raise PlanningError("Sélectionnez au moins une entreprise à visiter.")
             cache = GeocodeCache(settings.geocode_cache_path)
             progress_bar = st.progress(0, text="Vérification des coordonnées clients…")
 
             def update_progress(position: int, total: int, client_name: str) -> None:
                 progress_bar.progress(
-                    position / max(total, 1), text=f"Géocodage {position}/{total} · {client_name}"
+                    position / max(total, 1),
+                    text=f"Géocodage {position}/{total} · {client_name}",
                 )
 
             clients_to_geocode = selected_clients.copy()
@@ -472,7 +613,10 @@ with controls_column:
                     [clients_to_geocode, appointment_source], ignore_index=True
                 ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
-                clients_to_geocode, azure_client, cache, progress=update_progress
+                clients_to_geocode,
+                azure_client,
+                cache,
+                progress=update_progress,
             )
             progress_bar.empty()
 
@@ -487,15 +631,15 @@ with controls_column:
                     "Ma position",
                 )
             elif start_mode == "Adresse personnalisée":
-                address = ", ".join(part.strip() for part in address_parts if part.strip())
-                if len(address_parts[0].strip()) == 0 or len(address_parts[2].strip()) == 0:
-                    raise PlanningError("Renseignez au minimum la rue et la ville de départ.")
-                start = _geocode_start_address(address, cache)
+                start_address = _validated_address(start_address_parts, "de départ")
+                start = _geocode_address(start_address, cache, "de départ")
             else:
                 appointment = enriched_clients[
                     enriched_clients["client_id"].astype(str) == appointment_id
                 ]
-                if appointment.empty or appointment[["latitude", "longitude"]].isna().any(axis=None):
+                if appointment.empty or appointment[["latitude", "longitude"]].isna().any(
+                    axis=None
+                ):
                     raise PlanningError("Le client du rendez-vous n'a pas pu être géocodé.")
                 row = appointment.iloc[0]
                 start = StartPoint(
@@ -504,16 +648,27 @@ with controls_column:
                     f"Rendez-vous · {row['client_name']}",
                 )
 
+            end: StartPoint | None = None
+            if custom_arrival:
+                arrival_address = _validated_address(arrival_address_parts, "d'arrivée")
+                geocoded_end = _geocode_address(arrival_address, cache, "d'arrivée")
+                end = StartPoint(
+                    geocoded_end.latitude,
+                    geocoded_end.longitude,
+                    f"Arrivée · {geocoded_end.label}",
+                )
+
             plan = build_route_plan(
                 enriched_clients,
                 start,
-                radius_km=float(radius_km),
-                max_visits=int(max_visits),
-                max_duration_hours=float(duration_hours or 8),
-                return_to_start=return_to_start,
-                objective="time" if objective_label == "Le temps" else "distance",
+                radius_km=float(route_configuration.radius_km),
+                max_visits=route_configuration.max_visits,
+                max_duration_hours=None,
+                return_to_start=route_configuration.return_to_start and end is None,
+                objective="time",
                 azure_client=azure_client,
                 excluded_client_id=appointment_id,
+                end=end,
             )
             if geocode_errors:
                 plan.warnings.append(
@@ -521,7 +676,7 @@ with controls_column:
                     + " · ".join(geocode_errors[:3])
                 )
             st.session_state["route_plan"] = plan
-        except (PlanningError, ClientDataError, ValueError) as exc:
+        except (PlanningError, ClientDataError, StorageError, ValueError) as exc:
             st.error(str(exc))
         except Exception as exc:
             st.error(f"Le calcul de la tournée a échoué : {exc}")
@@ -534,7 +689,7 @@ with map_column:
             <div class="opti-empty">
               <div class="opti-empty-icon">🗺️</div>
               <h3>Votre tournée apparaîtra ici</h3>
-              <div>Importez le portefeuille, choisissez le point de départ et lancez le calcul.</div>
+              <div>Choisissez le commercial, les entreprises et le point de départ.</div>
             </div>
             """,
             unsafe_allow_html=True,

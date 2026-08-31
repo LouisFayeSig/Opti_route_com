@@ -24,6 +24,7 @@ class StartPoint:
 @dataclass
 class RoutePlan:
     start: StartPoint
+    end: StartPoint | None
     table: pd.DataFrame
     route_coordinates: list[tuple[float, float]]
     geometry: list[tuple[float, float]]
@@ -72,15 +73,18 @@ class RoutePlan:
                     "Temps cumulé": visit["Temps cumulé"],
                 }
             )
-        if self.return_to_start:
+        if self.return_to_start or self.end is not None:
             previous_distance_m = round(float(self.table.iloc[-1]["Distance cumulée"]) * 1000)
             previous_duration_s = round(float(self.table.iloc[-1]["Temps cumulé"]) * 60)
+            is_return = self.return_to_start
+            destination = self.start if is_return else self.end
+            assert destination is not None
             rows.append(
                 {
-                    "Étape": "Retour",
-                    "Client": self.start.label,
+                    "Étape": "Retour" if is_return else "Arrivée",
+                    "Client": destination.label,
                     "Ville": "",
-                    "Adresse": self.start.label,
+                    "Adresse": destination.label,
                     "Distance": (self.total_distance_m - previous_distance_m) / 1000,
                     "Temps": (self.total_duration_s - previous_duration_s) / 60,
                     "Distance cumulée": self.total_distance_m / 1000,
@@ -95,23 +99,32 @@ def build_route_plan(
     start: StartPoint,
     radius_km: float,
     max_visits: int,
-    max_duration_hours: float,
+    max_duration_hours: float | None,
     return_to_start: bool,
     objective: str,
     azure_client: AzureMapsClient | None = None,
     excluded_client_id: str | None = None,
+    end: StartPoint | None = None,
 ) -> RoutePlan:
+    if end is not None:
+        return_to_start = False
     candidates = clients_within_radius(clients, start.latitude, start.longitude, radius_km)
     if excluded_client_id is not None:
         candidates = candidates[candidates["client_id"].astype(str) != str(excluded_client_id)]
     candidate_count = len(candidates)
     if candidates.empty:
-        raise PlanningError(f"Aucun client géocodé n'a été trouvé dans un rayon de {radius_km:g} km.")
+        raise PlanningError(
+            f"Aucun client géocodé n'a été trouvé dans un rayon de {radius_km:g} km."
+        )
 
     selected = candidates.head(max_visits).reset_index(drop=True)
     node_coordinates = [(start.latitude, start.longitude)] + list(
         zip(selected["latitude"].astype(float), selected["longitude"].astype(float))
     )
+    end_node: int | None = None
+    if end is not None:
+        node_coordinates.append((end.latitude, end.longitude))
+        end_node = len(node_coordinates) - 1
     warnings: list[str] = []
     provider = "Estimation géodésique"
     if azure_client is not None:
@@ -132,11 +145,14 @@ def build_route_plan(
         distances,
         objective=objective,
         return_to_start=return_to_start,
-        max_duration_seconds=round(max_duration_hours * 3600),
+        max_duration_seconds=(
+            round(max_duration_hours * 3600) if max_duration_hours is not None else None
+        ),
+        end_node=end_node,
     )
-    visited_nodes = [node for node in ordered_nodes if node != 0]
+    visited_nodes = [node for node in ordered_nodes if node != 0 and node != end_node]
     if not visited_nodes:
-        raise PlanningError("Aucune visite ne tient dans la durée maximale choisie.")
+        raise PlanningError("Aucune visite n'a pu être intégrée à la tournée.")
 
     rows: list[dict[str, object]] = []
     cumulative_distance = 0
@@ -168,6 +184,9 @@ def build_route_plan(
     if return_to_start:
         cumulative_distance += distances[previous][0]
         cumulative_duration += durations[previous][0]
+    elif end_node is not None:
+        cumulative_distance += distances[previous][end_node]
+        cumulative_duration += durations[previous][end_node]
 
     route_coordinates = [node_coordinates[node] for node in ordered_nodes]
     geometry = route_coordinates
@@ -188,6 +207,7 @@ def build_route_plan(
 
     return RoutePlan(
         start=start,
+        end=end,
         table=pd.DataFrame(rows),
         route_coordinates=route_coordinates,
         geometry=geometry,

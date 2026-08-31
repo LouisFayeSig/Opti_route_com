@@ -16,6 +16,7 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
             "latitude": plan.start.latitude,
             "longitude": plan.start.longitude,
             "label": plan.start.label,
+            "map_label": "Départ",
             "order": "D",
             "color": "#1565C0",
             "rgb": [21, 101, 192],
@@ -23,16 +24,32 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
         }
     ]
     for _, row in plan.table.iterrows():
-        is_last = int(row["Ordre"]) == plan.visit_count and not plan.return_to_start
+        is_last = (
+            int(row["Ordre"]) == plan.visit_count and not plan.return_to_start and plan.end is None
+        )
         points.append(
             {
                 "latitude": float(row["Latitude"]),
                 "longitude": float(row["Longitude"]),
                 "label": str(row["Client"]),
+                "map_label": f"{int(row['Ordre'])}. {row['Client']}",
                 "order": str(int(row["Ordre"])),
                 "color": "#2E7D32" if is_last else "#D32F2F",
                 "rgb": [46, 125, 50] if is_last else [211, 47, 47],
                 "radius": 350,
+            }
+        )
+    if plan.end is not None:
+        points.append(
+            {
+                "latitude": plan.end.latitude,
+                "longitude": plan.end.longitude,
+                "label": plan.end.label,
+                "map_label": "Arrivée",
+                "order": "A",
+                "color": "#2E7D32",
+                "rgb": [46, 125, 50],
+                "radius": 520,
             }
         )
     return points
@@ -100,6 +117,17 @@ def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
             get_color=[255, 255, 255],
             get_size=12,
             get_alignment_baseline="center",
+        ),
+        pdk.Layer(
+            "TextLayer",
+            data=points,
+            get_position="[longitude, latitude]",
+            get_text="map_label",
+            get_color=[31, 41, 55],
+            get_size=14,
+            get_pixel_offset=[0, -24],
+            get_alignment_baseline="bottom",
+            billboard=True,
         ),
         pdk.Layer(
             "TextLayer",
@@ -189,13 +217,25 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
           filter:['==',['geometry-type'],'Point'],
           textOptions: {{textField:['get','order'], color:'#FFFFFF', size:12, font:['StandardFont-Bold']}}
         }}));
+        map.layers.add(new atlas.layer.SymbolLayer(source, 'company-labels', {{
+          filter:['==',['geometry-type'],'Point'],
+          iconOptions: {{image: 'none'}},
+          textOptions: {{
+            textField:['get','map_label'], color:'#1F2937', size:14,
+            offset:[0,-1.7], allowOverlap:true, ignorePlacement:true
+          }}
+        }}));
         const popup = new atlas.Popup({{pixelOffset:[0,-18]}});
         map.events.add('click', 'stops', event => {{
           if (!event.shapes || !event.shapes.length) return;
           const props = event.shapes[0].getProperties();
+          const content = document.createElement('div');
+          content.style.padding = '10px';
+          content.style.fontWeight = '600';
+          content.textContent = `${{props.order}} — ${{props.label}}`;
           popup.setOptions({{
             position:event.shapes[0].getCoordinates(),
-            content:`<div style="padding:10px"><strong>${{props.order}}</strong> — ${{props.label}}</div>`
+            content
           }}).open(map);
         }});
         const bounds = atlas.data.BoundingBox.fromPositions([

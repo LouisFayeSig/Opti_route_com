@@ -53,9 +53,7 @@ class AzureMapsClient:
                 **kwargs,
             )
         except requests.RequestException as exc:
-            raise AzureMapsError(
-                "Azure Maps est injoignable (erreur réseau ou proxy)."
-            ) from exc
+            raise AzureMapsError("Azure Maps est injoignable (erreur réseau ou proxy).") from exc
 
     def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         response = self._request(method, path, **kwargs)
@@ -198,9 +196,7 @@ class AzureMapsClient:
             return flattened
         return []
 
-    def route_path(
-        self, coordinates: Sequence[tuple[float, float]]
-    ) -> list[tuple[float, float]]:
+    def route_path(self, coordinates: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
         features = []
         for index, (latitude, longitude) in enumerate(coordinates):
             features.append(
@@ -240,7 +236,9 @@ class AzureMapsClient:
     ) -> list[tuple[float, float]]:
         if len(coordinates) <= limit:
             return list(coordinates)
-        indexes = [round(position * (len(coordinates) - 1) / (limit - 1)) for position in range(limit)]
+        indexes = [
+            round(position * (len(coordinates) - 1) / (limit - 1)) for position in range(limit)
+        ]
         return [coordinates[index] for index in indexes]
 
     @staticmethod
@@ -255,9 +253,7 @@ class AzureMapsClient:
         longitude_span = max(max(longitudes) - min(longitudes), 0.005)
         latitude_factor = max(0.2, abs(math.cos(math.radians(center_latitude))))
         zoom_longitude = math.log2(width * 0.75 * 360 / (256 * longitude_span))
-        zoom_latitude = math.log2(
-            height * 0.75 * 360 * latitude_factor / (256 * latitude_span)
-        )
+        zoom_latitude = math.log2(height * 0.75 * 360 * latitude_factor / (256 * latitude_span))
         zoom = max(1, min(18, int(min(zoom_longitude, zoom_latitude))))
         return f"{center_longitude:.6f},{center_latitude:.6f}", zoom
 
@@ -300,16 +296,13 @@ class AzureMapsClient:
                         "pins",
                         "default|coD32F2F||"
                         + "|".join(
-                            f"{longitude:.6f} {latitude:.6f}"
-                            for latitude, longitude in red_stops
+                            f"{longitude:.6f} {latitude:.6f}" for latitude, longitude in red_stops
                         ),
                     )
                 )
             if not return_to_start:
                 latitude, longitude = visit_stops[-1]
-                params.append(
-                    ("pins", f"default|co2E7D32||{longitude:.6f} {latitude:.6f}")
-                )
+                params.append(("pins", f"default|co2E7D32||{longitude:.6f} {latitude:.6f}"))
         response = self._request(
             "GET",
             "/map/static",

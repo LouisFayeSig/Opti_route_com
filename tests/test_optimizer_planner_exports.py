@@ -70,9 +70,46 @@ def test_planner_builds_route_and_exports() -> None:
     assert "google.com/maps/dir" in google_maps_url(plan)
 
 
+def test_planner_keeps_a_specific_arrival_after_all_visits() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["A", "B"],
+            "client_name": ["Alpha", "Beta"],
+            "salesperson": ["Morgan", "Morgan"],
+            "address": ["Adresse A", "Adresse B"],
+            "address_2": [pd.NA, pd.NA],
+            "address_3": [pd.NA, pd.NA],
+            "postal_code": ["14000", "14120"],
+            "city": ["Caen", "Mondeville"],
+            "country": ["France", "France"],
+            "latitude": [49.183, 49.174],
+            "longitude": [-0.370, -0.320],
+            "full_address": ["A", "B"],
+        }
+    )
+    arrival = StartPoint(49.250, -0.250, "Agence")
+
+    plan = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Départ"),
+        radius_km=20,
+        max_visits=2,
+        max_duration_hours=None,
+        return_to_start=True,
+        objective="time",
+        end=arrival,
+    )
+
+    assert not plan.return_to_start
+    assert plan.end == arrival
+    assert plan.route_coordinates[-1] == (arrival.latitude, arrival.longitude)
+    assert plan.itinerary_table().iloc[-1]["Étape"] == "Arrivée"
+    assert plan.itinerary_table().iloc[-1]["Client"] == "Agence"
+
+
 def test_spreadsheet_formula_prefixes_are_escaped() -> None:
     dangerous_values = [
-        "=HYPERLINK(\"https://example.test\")",
+        '=HYPERLINK("https://example.test")',
         "+1+1",
         "-1+1",
         "@SUM(1,1)",
@@ -90,7 +127,7 @@ def test_csv_and_excel_exports_keep_untrusted_values_as_text() -> None:
     clients = pd.DataFrame(
         {
             "client_id": ["A"],
-            "client_name": ["=HYPERLINK(\"https://example.test\")"],
+            "client_name": ['=HYPERLINK("https://example.test")'],
             "salesperson": ["Morgan"],
             "address": ["Adresse A"],
             "address_2": [pd.NA],
