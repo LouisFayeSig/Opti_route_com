@@ -12,6 +12,7 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - choix obligatoire du commercial ;
 - choix utilisateur du nombre de visites, entre 1 et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
+- retrait de visites depuis le résultat avec recalcul complet de la tournée ;
 - départ depuis la position du navigateur, une adresse ou un client existant ;
 - adresse d'arrivée spécifique facultative ;
 - cache SQLite des adresses géocodées ;

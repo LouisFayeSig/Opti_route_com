@@ -30,7 +30,13 @@ from opti_route.data import (
 from opti_route.exporting import csv_bytes, excel_bytes, google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
 from opti_route.map_view import render_map
-from opti_route.planner import PlanningError, RoutePlan, StartPoint, build_route_plan
+from opti_route.planner import (
+    PlanningError,
+    RoutePlan,
+    StartPoint,
+    build_route_plan,
+    rebuild_route_plan,
+)
 from opti_route.storage import (
     AppStore,
     PortfolioMetadata,
@@ -355,24 +361,87 @@ def _render_plan_summary(plan: RoutePlan) -> None:
     )
 
 
-def _render_results(plan: RoutePlan) -> None:
+def _render_results(
+    plan: RoutePlan,
+    route_client: AzureMapsClient | None,
+) -> None:
     st.subheader("Ordre de visite")
-    display = plan.itinerary_table()[
-        ["Étape", "Client", "Ville", "Distance", "Temps", "Distance cumulée", "Temps cumulé"]
+    st.caption(
+        "Décochez une ou plusieurs entreprises, puis appliquez la sélection pour recalculer la tournée."
+    )
+    display = plan.table[
+        [
+            "Ordre",
+            "Client",
+            "Ville",
+            "Adresse",
+            "Distance",
+            "Temps",
+            "Distance cumulée",
+            "Temps cumulé",
+        ]
     ].copy()
-    st.dataframe(
+    display.insert(0, "Conserver", True)
+    result_identifier = hashlib.sha1(
+        (
+            f"{plan.created_at.isoformat()}|" + "|".join(plan.table["Code client"].astype(str))
+        ).encode()
+    ).hexdigest()[:12]
+    edited_display = st.data_editor(
         display,
+        key=f"result_visit_selection_{result_identifier}",
         hide_index=True,
         use_container_width=True,
         height=min(590, 42 + 35 * len(display)),
+        disabled=[
+            "Ordre",
+            "Client",
+            "Ville",
+            "Adresse",
+            "Distance",
+            "Temps",
+            "Distance cumulée",
+            "Temps cumulé",
+        ],
         column_config={
-            "Étape": st.column_config.TextColumn("Étape"),
+            "Conserver": st.column_config.CheckboxColumn("Visiter", required=True, width="small"),
+            "Ordre": st.column_config.NumberColumn("Ordre", format="%d"),
             "Distance": st.column_config.NumberColumn("Distance", format="%.1f km"),
             "Temps": st.column_config.NumberColumn("Temps", format="%.0f min"),
             "Distance cumulée": st.column_config.NumberColumn("Cumul", format="%.1f km"),
             "Temps cumulé": st.column_config.NumberColumn("Temps cumulé", format="%.0f min"),
         },
     )
+    retained_positions = [
+        position
+        for position, retained in enumerate(
+            edited_display["Conserver"].fillna(False).astype(bool).tolist()
+        )
+        if retained
+    ]
+    selection_changed = len(retained_positions) != plan.visit_count
+    if not retained_positions:
+        st.warning("Conservez au moins une entreprise pour recalculer la tournée.")
+    if st.button(
+        "Recalculer avec les adresses conservées",
+        disabled=not selection_changed or not retained_positions,
+        use_container_width=True,
+        key=f"apply_result_selection_{result_identifier}",
+    ):
+        try:
+            with st.spinner("Recalcul de la tournée…"):
+                updated_plan = rebuild_route_plan(
+                    plan,
+                    retained_positions,
+                    azure_client=route_client,
+                )
+            st.session_state["route_plan"] = updated_plan
+            st.rerun()
+        except (PlanningError, ValueError) as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Le recalcul de la tournée a échoué : {exc}")
+
     with st.expander("Exporter ou partager la tournée", expanded=True):
         export_columns = st.columns([1, 1, 1, 1.25])
         export_columns[0].download_button(
@@ -576,10 +645,10 @@ with controls_column:
         if start_mode == "Client existant"
         else "Nombre de visites"
     )
-    requested_visits = st.selectbox(
+    requested_visits = st.select_slider(
         visits_label,
         options=list(range(1, route_configuration.max_visits + 1)),
-        index=route_configuration.max_visits - 1,
+        value=route_configuration.max_visits,
         help=(
             "La valeur est limitée par le maximum défini par l'administrateur. "
             "Les entreprises sélectionnées les plus proches du départ sont retenues en priorité."
@@ -729,4 +798,4 @@ if plan is not None:
     for warning in plan.warnings:
         st.warning(warning)
     st.divider()
-    _render_results(plan)
+    _render_results(plan, azure_client)

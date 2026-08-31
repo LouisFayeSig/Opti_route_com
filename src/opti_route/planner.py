@@ -220,3 +220,41 @@ def build_route_plan(
         warnings=warnings,
         map_image=map_image,
     )
+
+
+def rebuild_route_plan(
+    plan: RoutePlan,
+    retained_visit_positions: list[int],
+    azure_client: AzureMapsClient | None = None,
+) -> RoutePlan:
+    """Recalcule entièrement une tournée après retrait de visites du résultat."""
+    positions = sorted(set(retained_visit_positions))
+    if not positions:
+        raise PlanningError("Conservez au moins une entreprise dans la tournée.")
+    if positions[0] < 0 or positions[-1] >= plan.visit_count:
+        raise PlanningError("La sélection des visites est invalide.")
+
+    visits = plan.table.iloc[positions]
+    clients = pd.DataFrame(
+        {
+            "client_id": visits["Code client"].to_numpy(),
+            "client_name": visits["Client"].to_numpy(),
+            "city": visits["Ville"].to_numpy(),
+            "full_address": visits["Adresse"].to_numpy(),
+            "latitude": visits["Latitude"].astype(float).to_numpy(),
+            "longitude": visits["Longitude"].astype(float).to_numpy(),
+        }
+    )
+    # Le rayon terrestre maximal permet de conserver exactement les lignes choisies ;
+    # la présélection par rayon a déjà eu lieu lors de la génération initiale.
+    return build_route_plan(
+        clients,
+        plan.start,
+        radius_km=21_000,
+        max_visits=len(clients),
+        max_duration_hours=None,
+        return_to_start=plan.return_to_start,
+        objective="time",
+        azure_client=azure_client,
+        end=plan.end,
+    )

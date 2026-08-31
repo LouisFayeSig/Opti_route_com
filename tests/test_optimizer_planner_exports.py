@@ -14,7 +14,7 @@ from opti_route.exporting import (
     sanitize_spreadsheet_value,
 )
 from opti_route.optimizer import optimize_route
-from opti_route.planner import StartPoint, build_route_plan
+from opti_route.planner import StartPoint, build_route_plan, rebuild_route_plan
 
 
 def test_optimizer_visits_each_node_and_returns() -> None:
@@ -137,6 +137,42 @@ def test_planner_prioritizes_the_closest_selected_companies() -> None:
 
     assert plan.visit_count == 1
     assert plan.table.iloc[0]["Client"] == "Entreprise proche"
+
+
+def test_result_can_be_rebuilt_after_a_visit_is_unchecked() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["A", "B", "C"],
+            "client_name": ["Alpha", "Beta", "Gamma"],
+            "salesperson": ["Morgan"] * 3,
+            "address": ["Adresse A", "Adresse B", "Adresse C"],
+            "address_2": [pd.NA] * 3,
+            "address_3": [pd.NA] * 3,
+            "postal_code": ["14000", "14120", "14200"],
+            "city": ["Caen", "Mondeville", "Hérouville-Saint-Clair"],
+            "country": ["France"] * 3,
+            "latitude": [49.183, 49.174, 49.205],
+            "longitude": [-0.370, -0.320, -0.335],
+            "full_address": ["A", "B", "C"],
+        }
+    )
+    original = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Caen"),
+        radius_km=20,
+        max_visits=3,
+        max_duration_hours=None,
+        return_to_start=True,
+        objective="time",
+    )
+    removed_client = original.table.iloc[1]["Client"]
+
+    rebuilt = rebuild_route_plan(original, [0, 2])
+
+    assert rebuilt.visit_count == 2
+    assert removed_client not in rebuilt.table["Client"].tolist()
+    assert rebuilt.route_coordinates[0] == rebuilt.route_coordinates[-1]
+    assert rebuilt.total_distance_m > 0
 
 
 def test_spreadsheet_formula_prefixes_are_escaped() -> None:
