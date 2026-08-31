@@ -47,12 +47,16 @@ def _sanitize_spreadsheet_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def csv_bytes(plan: RoutePlan) -> bytes:
-    return _sanitize_spreadsheet_frame(_export_table(plan)).to_csv(
-        index=False,
-        sep=";",
-        decimal=",",
-        lineterminator="\n",
-    ).encode("utf-8-sig")
+    return (
+        _sanitize_spreadsheet_frame(_export_table(plan))
+        .to_csv(
+            index=False,
+            sep=";",
+            decimal=",",
+            lineterminator="\n",
+        )
+        .encode("utf-8-sig")
+    )
 
 
 def excel_bytes(plan: RoutePlan) -> bytes:
@@ -65,6 +69,7 @@ def excel_bytes(plan: RoutePlan) -> bytes:
             {
                 "Indicateur": [
                     "Départ",
+                    "Arrivée",
                     "Nombre de visites",
                     "Distance totale (km)",
                     "Durée totale (min)",
@@ -73,6 +78,9 @@ def excel_bytes(plan: RoutePlan) -> bytes:
                 ],
                 "Valeur": [
                     plan.start.label,
+                    plan.end.label
+                    if plan.end is not None
+                    else (plan.start.label if plan.return_to_start else "Dernier client"),
                     plan.visit_count,
                     round(plan.total_distance_m / 1000, 1),
                     round(plan.total_duration_s / 60),
@@ -126,7 +134,9 @@ def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600)
         is_arrival = not plan.return_to_start and index == len(stop_points) - 1
         color = "#1565C0" if is_start else "#2E7D32" if is_arrival else "#D32F2F"
         radius = 16 if is_start else 14
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color, outline="white", width=3)
+        draw.ellipse(
+            (x - radius, y - radius, x + radius, y + radius), fill=color, outline="white", width=3
+        )
         label = "D" if is_start else str(index)
         box = draw.textbbox((0, 0), label)
         text_width, text_height = box[2] - box[0], box[3] - box[1]
@@ -178,7 +188,13 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     )
     content.append(Spacer(1, 8 * mm))
     export = _export_table(plan)
-    columns = ["Étape", "Client", "Ville", "Distance depuis le précédent (km)", "Temps depuis le précédent (min)"]
+    columns = [
+        "Étape",
+        "Client",
+        "Ville",
+        "Distance depuis le précédent (km)",
+        "Temps depuis le précédent (min)",
+    ]
     rows = [columns]
     for _, row in export[columns].iterrows():
         rows.append(
@@ -217,7 +233,9 @@ def google_maps_url(plan: RoutePlan) -> str:
     destination_point = points[-1]
     destination = f"{destination_point[0]:.6f},{destination_point[1]:.6f}"
     waypoint_points = points[1:-1]
-    waypoints = "|".join(f"{latitude:.6f},{longitude:.6f}" for latitude, longitude in waypoint_points)
+    waypoints = "|".join(
+        f"{latitude:.6f},{longitude:.6f}" for latitude, longitude in waypoint_points
+    )
     url = (
         "https://www.google.com/maps/dir/?api=1"
         f"&origin={quote(origin)}&destination={quote(destination)}&travelmode=driving"

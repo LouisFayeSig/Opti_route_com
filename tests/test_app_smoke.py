@@ -37,3 +37,22 @@ def test_password_mode_accepts_configured_credentials(monkeypatch) -> None:
 
     assert not app.exception
     assert any("Connecté : collaborateur-test" in caption.value for caption in app.caption)
+    assert len(app.file_uploader) == 0
+
+
+def test_admin_account_can_access_portfolio_import(monkeypatch) -> None:
+    monkeypatch.setenv("AUTH_MODE", "password")
+    monkeypatch.setenv("AUTH_USERNAME", "collaborateur-test")
+    monkeypatch.setenv("AUTH_PASSWORD", "mot-de-passe-test-long")
+    monkeypatch.setenv("ADMIN_USERNAME", "administrateur-test")
+    monkeypatch.setenv("ADMIN_PASSWORD", "mot-de-passe-admin-test-long")
+    app_path = Path(__file__).parents[1] / "app.py"
+    app = AppTest.from_file(str(app_path), default_timeout=30).run()
+
+    app.text_input[0].input("administrateur-test")
+    app.text_input[1].input("mot-de-passe-admin-test-long")
+    app.button[0].click().run()
+
+    assert not app.exception
+    assert any("Administrateur" in caption.value for caption in app.caption)
+    assert len(app.file_uploader) == 1

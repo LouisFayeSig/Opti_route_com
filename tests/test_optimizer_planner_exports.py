@@ -14,7 +14,7 @@ from opti_route.exporting import (
     sanitize_spreadsheet_value,
 )
 from opti_route.optimizer import optimize_route
-from opti_route.planner import StartPoint, build_route_plan
+from opti_route.planner import StartPoint, build_route_plan, rebuild_route_plan
 
 
 def test_optimizer_visits_each_node_and_returns() -> None:
@@ -70,9 +70,114 @@ def test_planner_builds_route_and_exports() -> None:
     assert "google.com/maps/dir" in google_maps_url(plan)
 
 
+def test_planner_keeps_a_specific_arrival_after_all_visits() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["A", "B"],
+            "client_name": ["Alpha", "Beta"],
+            "salesperson": ["Morgan", "Morgan"],
+            "address": ["Adresse A", "Adresse B"],
+            "address_2": [pd.NA, pd.NA],
+            "address_3": [pd.NA, pd.NA],
+            "postal_code": ["14000", "14120"],
+            "city": ["Caen", "Mondeville"],
+            "country": ["France", "France"],
+            "latitude": [49.183, 49.174],
+            "longitude": [-0.370, -0.320],
+            "full_address": ["A", "B"],
+        }
+    )
+    arrival = StartPoint(49.250, -0.250, "Agence")
+
+    plan = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Départ"),
+        radius_km=20,
+        max_visits=2,
+        max_duration_hours=None,
+        return_to_start=True,
+        objective="time",
+        end=arrival,
+    )
+
+    assert not plan.return_to_start
+    assert plan.end == arrival
+    assert plan.route_coordinates[-1] == (arrival.latitude, arrival.longitude)
+    assert plan.itinerary_table().iloc[-1]["Étape"] == "Arrivée"
+    assert plan.itinerary_table().iloc[-1]["Client"] == "Agence"
+
+
+def test_planner_prioritizes_the_closest_selected_companies() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["FAR", "NEAR"],
+            "client_name": ["Entreprise éloignée", "Entreprise proche"],
+            "salesperson": ["Morgan", "Morgan"],
+            "address": ["Adresse éloignée", "Adresse proche"],
+            "address_2": [pd.NA, pd.NA],
+            "address_3": [pd.NA, pd.NA],
+            "postal_code": ["75000", "14000"],
+            "city": ["Paris", "Caen"],
+            "country": ["France", "France"],
+            "latitude": [48.8566, 49.184],
+            "longitude": [2.3522, -0.371],
+            "full_address": ["Paris", "Caen"],
+        }
+    )
+
+    plan = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Départ"),
+        radius_km=300,
+        max_visits=1,
+        max_duration_hours=None,
+        return_to_start=False,
+        objective="time",
+    )
+
+    assert plan.visit_count == 1
+    assert plan.table.iloc[0]["Client"] == "Entreprise proche"
+
+
+def test_result_can_be_rebuilt_after_a_visit_is_unchecked() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["A", "B", "C"],
+            "client_name": ["Alpha", "Beta", "Gamma"],
+            "salesperson": ["Morgan"] * 3,
+            "address": ["Adresse A", "Adresse B", "Adresse C"],
+            "address_2": [pd.NA] * 3,
+            "address_3": [pd.NA] * 3,
+            "postal_code": ["14000", "14120", "14200"],
+            "city": ["Caen", "Mondeville", "Hérouville-Saint-Clair"],
+            "country": ["France"] * 3,
+            "latitude": [49.183, 49.174, 49.205],
+            "longitude": [-0.370, -0.320, -0.335],
+            "full_address": ["A", "B", "C"],
+        }
+    )
+    original = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Caen"),
+        radius_km=20,
+        max_visits=3,
+        max_duration_hours=None,
+        return_to_start=True,
+        objective="time",
+    )
+    removed_client = original.table.iloc[1]["Client"]
+
+    rebuilt = rebuild_route_plan(original, [0, 2])
+
+    assert rebuilt.visit_count == 2
+    assert removed_client not in rebuilt.table["Client"].tolist()
+    assert rebuilt.route_coordinates[0] == rebuilt.route_coordinates[-1]
+    assert rebuilt.total_distance_m > 0
+
+
 def test_spreadsheet_formula_prefixes_are_escaped() -> None:
     dangerous_values = [
-        "=HYPERLINK(\"https://example.test\")",
+        '=HYPERLINK("https://example.test")',
         "+1+1",
         "-1+1",
         "@SUM(1,1)",
@@ -90,7 +195,7 @@ def test_csv_and_excel_exports_keep_untrusted_values_as_text() -> None:
     clients = pd.DataFrame(
         {
             "client_id": ["A"],
-            "client_name": ["=HYPERLINK(\"https://example.test\")"],
+            "client_name": ['=HYPERLINK("https://example.test")'],
             "salesperson": ["Morgan"],
             "address": ["Adresse A"],
             "address_2": [pd.NA],

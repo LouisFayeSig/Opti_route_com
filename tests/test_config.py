@@ -8,6 +8,9 @@ CONFIG_VARIABLES = (
     "AUTH_MODE",
     "AUTH_USERNAME",
     "AUTH_PASSWORD",
+    "ADMIN_USERNAME",
+    "ADMIN_PASSWORD",
+    "ADMIN_EMAILS",
     "AZURE_MAPS_SUBSCRIPTION_KEY",
     "AZURE_MAPS_KEY",
 )
@@ -25,6 +28,9 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
                 "AUTH_MODE": "password",
                 "AUTH_USERNAME": "collaborateur-cloud",
                 "AUTH_PASSWORD": "secret-cloud",
+                "ADMIN_USERNAME": "administrateur-cloud",
+                "ADMIN_PASSWORD": "secret-admin-cloud",
+                "ADMIN_EMAILS": "Admin@Example.com, autre@example.com",
                 "AZURE_MAPS_SUBSCRIPTION_KEY": "azure-cloud",
             }
         },
@@ -33,6 +39,9 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
     assert settings.auth_mode == "password"
     assert settings.auth_username == "collaborateur-cloud"
     assert settings.auth_password == "secret-cloud"
+    assert settings.admin_username == "administrateur-cloud"
+    assert settings.admin_password == "secret-admin-cloud"
+    assert settings.admin_emails == ("admin@example.com", "autre@example.com")
     assert settings.azure_maps_key == "azure-cloud"
 
 

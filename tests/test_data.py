@@ -3,12 +3,15 @@ from __future__ import annotations
 from io import BytesIO
 
 import pandas as pd
+import pytest
 
 from opti_route.data import (
+    ClientDataError,
     list_sheet_names,
     load_clients,
     standardize_clients,
     suggest_column_mapping,
+    validate_uploaded_file,
 )
 
 
@@ -91,3 +94,8 @@ def test_reads_workbook_sheet_and_custom_header_row() -> None:
         header_row=1,
     )
     assert clients["client_name"].tolist() == ["Alpha"]
+
+
+def test_upload_validation_rejects_fake_office_archives() -> None:
+    with pytest.raises(ClientDataError, match="invalide ou corrompu"):
+        validate_uploaded_file(b"not-an-office-file", "clients.xlsx")

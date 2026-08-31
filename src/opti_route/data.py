@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
+import zipfile
 from pathlib import Path
 from typing import BinaryIO
 
@@ -11,6 +12,33 @@ import pandas as pd
 
 class ClientDataError(ValueError):
     """Le fichier clients ne peut pas être converti vers le schéma attendu."""
+
+
+SUPPORTED_SUFFIXES = {".csv", ".xls", ".xlsx", ".xlsm", ".xlsb"}
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+
+
+def validate_uploaded_file(payload: bytes, filename: str) -> None:
+    """Refuse les formats inattendus et les archives Office anormalement volumineuses."""
+    suffix = Path(filename).suffix.casefold()
+    if suffix not in SUPPORTED_SUFFIXES:
+        raise ClientDataError("Format non pris en charge. Utilisez CSV, XLS, XLSX, XLSM ou XLSB.")
+    if not payload:
+        raise ClientDataError("Le fichier importé est vide.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        raise ClientDataError("Le fichier dépasse la taille maximale autorisée de 20 Mo.")
+    if suffix in {".xlsx", ".xlsm", ".xlsb"}:
+        try:
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                members = archive.infolist()
+                expanded_size = sum(member.file_size for member in members)
+                if len(members) > 2_000 or expanded_size > MAX_UNCOMPRESSED_BYTES:
+                    raise ClientDataError(
+                        "Le classeur décompressé dépasse les limites de sécurité autorisées."
+                    )
+        except zipfile.BadZipFile as exc:
+            raise ClientDataError("Le classeur Office est invalide ou corrompu.") from exc
 
 
 ALIASES: dict[str, tuple[str, ...]] = {
@@ -129,7 +157,9 @@ def read_tabular(
     )
 
 
-def list_sheet_names(source: Path | BinaryIO | io.BytesIO, filename: str | None = None) -> list[str]:
+def list_sheet_names(
+    source: Path | BinaryIO | io.BytesIO, filename: str | None = None
+) -> list[str]:
     suffix = Path(filename or getattr(source, "name", "")).suffix.casefold()
     if suffix == ".csv":
         return ["Données"]
@@ -221,7 +251,9 @@ def standardize_clients(
     clients["full_address"] = clients[
         ["address", "address_2", "address_3", "postal_code", "city", "country"]
     ].apply(
-        lambda row: ", ".join(str(value) for value in row if pd.notna(value) and str(value).strip()),
+        lambda row: ", ".join(
+            str(value) for value in row if pd.notna(value) and str(value).strip()
+        ),
         axis=1,
     )
     clients["client_name"] = (
@@ -243,17 +275,5 @@ def load_clients(
     header_row: int = 0,
     column_mapping: dict[str, str | None] | None = None,
 ) -> pd.DataFrame:
-    raw = read_tabular(
-        source, filename=filename, sheet_name=sheet_name, header_row=header_row
-    )
+    raw = read_tabular(source, filename=filename, sheet_name=sheet_name, header_row=header_row)
     return standardize_clients(raw, column_mapping=column_mapping)
-
-
-def discover_client_files(project_root: Path) -> list[Path]:
-    supported = {".csv", ".xls", ".xlsx", ".xlsm", ".xlsb"}
-    data_directory = project_root / "data"
-    if not data_directory.exists():
-        return []
-    return sorted(
-        path for path in data_directory.iterdir() if path.is_file() and path.suffix.casefold() in supported
-    )

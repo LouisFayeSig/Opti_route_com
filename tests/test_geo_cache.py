@@ -7,6 +7,7 @@ import pytest
 
 from opti_route.cache import GeocodeCache
 from opti_route.geo import clients_within_radius, estimated_road_matrix, haversine_km
+from opti_route.geocoding import geocode_missing_clients
 
 
 def test_haversine_and_radius_selection() -> None:
@@ -39,3 +40,20 @@ def test_geocode_cache_round_trip() -> None:
     assert result is not None
     assert result.latitude == pytest.approx(49.18)
     assert result.formatted_address == "1 rue du Test, 14000 Caen"
+
+
+def test_client_without_coordinates_is_reported_and_kept_ungeocoded() -> None:
+    cache = GeocodeCache(Path(".cache/test-geocode-cache.sqlite3"))
+    clients = pd.DataFrame(
+        {
+            "client_name": ["Adresse inconnue"],
+            "full_address": ["1 rue Inconnue, 14000 Caen"],
+            "latitude": [pd.NA],
+            "longitude": [pd.NA],
+        }
+    )
+
+    enriched, errors = geocode_missing_clients(clients, None, cache)
+
+    assert enriched[["latitude", "longitude"]].isna().all(axis=None)
+    assert errors == ["Adresse inconnue : coordonnées absentes et Azure Maps non configuré"]

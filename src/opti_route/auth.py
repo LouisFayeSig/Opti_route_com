@@ -9,6 +9,8 @@ import streamlit as st
 from .config import Settings
 
 _AUTHENTICATED_KEY = "opti_route_authenticated"
+_AUTHENTICATED_NAME_KEY = "opti_route_authenticated_name"
+_AUTHENTICATED_ROLE_KEY = "opti_route_authenticated_role"
 _FAILED_ATTEMPTS_KEY = "opti_route_failed_login_attempts"
 _LOCKED_UNTIL_KEY = "opti_route_login_locked_until"
 _MAX_ATTEMPTS = 5
@@ -19,6 +21,11 @@ _LOCK_SECONDS = 30
 class AuthenticatedUser:
     display_name: str
     method: str
+    role: str = "user"
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
 
 
 def credentials_match(
@@ -56,7 +63,11 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
         st.stop()
 
     if st.session_state.get(_AUTHENTICATED_KEY) is True:
-        return AuthenticatedUser(settings.auth_username, "password")
+        return AuthenticatedUser(
+            str(st.session_state.get(_AUTHENTICATED_NAME_KEY) or settings.auth_username),
+            "password",
+            str(st.session_state.get(_AUTHENTICATED_ROLE_KEY) or "user"),
+        )
 
     _login_heading("Saisissez l’identifiant partagé configuré pour cette application.")
     now = time.monotonic()
@@ -80,13 +91,24 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
         )
 
     if submitted:
-        if credentials_match(
+        user_matches = credentials_match(
             username,
             password,
             settings.auth_username,
             settings.auth_password,
-        ):
+        )
+        admin_matches = bool(
+            settings.admin_username and settings.admin_password
+        ) and credentials_match(
+            username,
+            password,
+            settings.admin_username or "",
+            settings.admin_password or "",
+        )
+        if user_matches or admin_matches:
             st.session_state[_AUTHENTICATED_KEY] = True
+            st.session_state[_AUTHENTICATED_NAME_KEY] = username
+            st.session_state[_AUTHENTICATED_ROLE_KEY] = "admin" if admin_matches else "user"
             st.session_state.pop(_FAILED_ATTEMPTS_KEY, None)
             st.session_state.pop(_LOCKED_UNTIL_KEY, None)
             st.rerun()
@@ -102,7 +124,7 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
     st.stop()
 
 
-def _require_entra_auth() -> AuthenticatedUser:
+def _require_entra_auth(settings: Settings) -> AuthenticatedUser:
     user_data: dict[str, object] = {}
     try:
         if getattr(st.user, "is_logged_in", False):
@@ -124,7 +146,18 @@ def _require_entra_auth() -> AuthenticatedUser:
             or user_data.get("email")
             or "Collaborateur"
         )
-        return AuthenticatedUser(display_name, "entra")
+        principal = (
+            str(
+                user_data.get("preferred_username")
+                or user_data.get("email")
+                or user_data.get("upn")
+                or ""
+            )
+            .strip()
+            .casefold()
+        )
+        role = "admin" if principal and principal in settings.admin_emails else "user"
+        return AuthenticatedUser(display_name, "entra", role)
 
     _login_heading("Connectez-vous avec votre compte Microsoft professionnel.")
     if st.button("Se connecter avec Microsoft", type="primary", use_container_width=True):
@@ -144,7 +177,7 @@ def require_authentication(settings: Settings) -> AuthenticatedUser:
     if settings.auth_mode == "password":
         return _require_password_auth(settings)
     if settings.auth_mode == "entra":
-        return _require_entra_auth()
+        return _require_entra_auth(settings)
 
     _login_heading("La configuration d’authentification est invalide.")
     st.error("AUTH_MODE doit valoir password, entra ou none.")
@@ -159,11 +192,14 @@ def render_account_controls(user: AuthenticatedUser) -> None:
         )
         return
 
-    st.caption(f"Connecté : {user.display_name}")
+    role_label = "Administrateur" if user.is_admin else "Utilisateur"
+    st.caption(f"Connecté : {user.display_name} · {role_label}")
     if user.method == "entra":
         st.button("Se déconnecter", on_click=st.logout, use_container_width=True)
     elif st.button("Se déconnecter", use_container_width=True):
         st.session_state.pop(_AUTHENTICATED_KEY, None)
+        st.session_state.pop(_AUTHENTICATED_NAME_KEY, None)
+        st.session_state.pop(_AUTHENTICATED_ROLE_KEY, None)
         st.session_state.pop(_FAILED_ATTEMPTS_KEY, None)
         st.session_state.pop(_LOCKED_UNTIL_KEY, None)
         st.rerun()

@@ -134,8 +134,18 @@ def test_proxy_error_is_replaced_by_short_message() -> None:
 def test_route_matrix_parses_flat_response() -> None:
     cells = [
         {"originIndex": 0, "destinationIndex": 0, "distanceInMeters": 0, "durationInSeconds": 0},
-        {"originIndex": 0, "destinationIndex": 1, "distanceInMeters": 1200, "durationInSeconds": 180},
-        {"originIndex": 1, "destinationIndex": 0, "distanceInMeters": 1250, "durationInSeconds": 190},
+        {
+            "originIndex": 0,
+            "destinationIndex": 1,
+            "distanceInMeters": 1200,
+            "durationInSeconds": 180,
+        },
+        {
+            "originIndex": 1,
+            "destinationIndex": 0,
+            "distanceInMeters": 1250,
+            "durationInSeconds": 190,
+        },
         {"originIndex": 1, "destinationIndex": 1, "distanceInMeters": 0, "durationInSeconds": 0},
     ]
     session = FakeSession([FakeResponse({"properties": {"matrix": cells}})])
