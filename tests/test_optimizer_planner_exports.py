@@ -107,6 +107,38 @@ def test_planner_keeps_a_specific_arrival_after_all_visits() -> None:
     assert plan.itinerary_table().iloc[-1]["Client"] == "Agence"
 
 
+def test_planner_prioritizes_the_closest_selected_companies() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["FAR", "NEAR"],
+            "client_name": ["Entreprise éloignée", "Entreprise proche"],
+            "salesperson": ["Morgan", "Morgan"],
+            "address": ["Adresse éloignée", "Adresse proche"],
+            "address_2": [pd.NA, pd.NA],
+            "address_3": [pd.NA, pd.NA],
+            "postal_code": ["75000", "14000"],
+            "city": ["Paris", "Caen"],
+            "country": ["France", "France"],
+            "latitude": [48.8566, 49.184],
+            "longitude": [2.3522, -0.371],
+            "full_address": ["Paris", "Caen"],
+        }
+    )
+
+    plan = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Départ"),
+        radius_km=300,
+        max_visits=1,
+        max_duration_hours=None,
+        return_to_start=False,
+        objective="time",
+    )
+
+    assert plan.visit_count == 1
+    assert plan.table.iloc[0]["Client"] == "Entreprise proche"
+
+
 def test_spreadsheet_formula_prefixes_are_escaped() -> None:
     dangerous_values = [
         '=HYPERLINK("https://example.test")',

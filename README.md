@@ -10,6 +10,7 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - séparation des rôles administrateur et utilisateur ;
 - stockage du portefeuille normalisé dans SQLite sans conservation du classeur brut ;
 - choix obligatoire du commercial ;
+- choix utilisateur du nombre de visites, entre 1 et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
 - départ depuis la position du navigateur, une adresse ou un client existant ;
 - adresse d'arrivée spécifique facultative ;

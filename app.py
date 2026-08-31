@@ -571,6 +571,21 @@ with controls_column:
         )
         appointment_id = str(appointment_options.at[selected_appointment, "client_id"])
 
+    visits_label = (
+        "Nombre de visites complémentaires"
+        if start_mode == "Client existant"
+        else "Nombre de visites"
+    )
+    requested_visits = st.selectbox(
+        visits_label,
+        options=list(range(1, route_configuration.max_visits + 1)),
+        index=route_configuration.max_visits - 1,
+        help=(
+            "La valeur est limitée par le maximum défini par l'administrateur. "
+            "Les entreprises sélectionnées les plus proches du départ sont retenues en priorité."
+        ),
+    )
+
     custom_arrival = st.toggle("Utiliser une adresse d'arrivée spécifique", value=False)
     arrival_address_parts: list[str] = []
     if custom_arrival:
@@ -579,7 +594,7 @@ with controls_column:
     with st.container(border=True):
         st.markdown("##### Contraintes définies par l'administrateur")
         st.caption(
-            f"Maximum : **{route_configuration.max_visits} visite(s)** · "
+            f"Maximum autorisé : **{route_configuration.max_visits} visite(s)** · "
             f"Rayon : **{route_configuration.radius_km} km** · "
             + (
                 "**retour au départ**"
@@ -619,6 +634,18 @@ with controls_column:
                 progress=update_progress,
             )
             progress_bar.empty()
+
+            visitable_clients = enriched_clients
+            if appointment_id is not None:
+                visitable_clients = visitable_clients[
+                    visitable_clients["client_id"].astype(str) != appointment_id
+                ]
+            if visitable_clients.dropna(subset=["latitude", "longitude"]).empty:
+                error_details = " · ".join(geocode_errors[:3])
+                raise PlanningError(
+                    "Aucune entreprise sélectionnée n'a pu être géocodée."
+                    + (f" {error_details}" if error_details else "")
+                )
 
             if start_mode == "Ma position":
                 if not location_value:
@@ -662,7 +689,7 @@ with controls_column:
                 enriched_clients,
                 start,
                 radius_km=float(route_configuration.radius_km),
-                max_visits=route_configuration.max_visits,
+                max_visits=int(requested_visits),
                 max_duration_hours=None,
                 return_to_start=route_configuration.return_to_start and end is None,
                 objective="time",

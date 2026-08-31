@@ -6,6 +6,7 @@ import math
 import pydeck as pdk
 import streamlit as st
 import streamlit.components.v1 as components
+from pydeck.types import String
 
 from .planner import RoutePlan
 
@@ -84,6 +85,30 @@ def _direction_arrows(geometry: list[tuple[float, float]]) -> list[dict[str, obj
     return arrows
 
 
+def _persistent_label_layer(points: list[dict[str, object]]) -> pdk.Layer:
+    return pdk.Layer(
+        "TextLayer",
+        id="persistent-company-labels",
+        data=points,
+        get_position="[longitude, latitude]",
+        get_text="map_label",
+        get_color=[31, 41, 55, 255],
+        get_size=15,
+        get_pixel_offset=[0, -22],
+        get_alignment_baseline=String("bottom"),
+        get_text_anchor=String("middle"),
+        billboard=True,
+        background=True,
+        get_background_color=[255, 255, 255, 225],
+        background_padding=[5, 3],
+        background_border_radius=4,
+        font_family=String("Arial, sans-serif"),
+        font_weight=600,
+        character_set=String("auto"),
+        pickable=False,
+    )
+
+
 def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
     points = _map_points(plan)
     arrows = _direction_arrows(plan.geometry)
@@ -116,19 +141,10 @@ def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
             get_text="order",
             get_color=[255, 255, 255],
             get_size=12,
-            get_alignment_baseline="center",
+            get_alignment_baseline=String("center"),
+            get_text_anchor=String("middle"),
         ),
-        pdk.Layer(
-            "TextLayer",
-            data=points,
-            get_position="[longitude, latitude]",
-            get_text="map_label",
-            get_color=[31, 41, 55],
-            get_size=14,
-            get_pixel_offset=[0, -24],
-            get_alignment_baseline="bottom",
-            billboard=True,
-        ),
+        _persistent_label_layer(points),
         pdk.Layer(
             "TextLayer",
             data=arrows,
@@ -137,7 +153,8 @@ def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
             get_color=[21, 101, 192],
             get_size=22,
             get_angle="angle",
-            get_alignment_baseline="center",
+            get_alignment_baseline=String("center"),
+            get_text_anchor=String("middle"),
         ),
     ]
     latitude_span = max(point["latitude"] for point in points) - min(
@@ -222,7 +239,9 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
           iconOptions: {{image: 'none'}},
           textOptions: {{
             textField:['get','map_label'], color:'#1F2937', size:14,
-            offset:[0,-1.7], allowOverlap:true, ignorePlacement:true
+            font:['StandardFont-Bold'], offset:[0,-1.7],
+            haloColor:'#FFFFFF', haloWidth:2,
+            allowOverlap:true, ignorePlacement:true
           }}
         }}));
         const popup = new atlas.Popup({{pixelOffset:[0,-18]}});
