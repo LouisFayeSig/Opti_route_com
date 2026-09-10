@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from urllib.parse import quote
+from xml.sax.saxutils import escape
 
 import pandas as pd
 from openpyxl.styles import Font, PatternFill
@@ -13,6 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from .image_labels import draw_stop_labels
 from .planner import RoutePlan
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\x00", "＝", "＋", "－", "＠")
@@ -115,7 +117,7 @@ def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600)
     min_longitude, max_longitude = min(longitudes), max(longitudes)
     latitude_span = max(max_latitude - min_latitude, 0.001)
     longitude_span = max(max_longitude - min_longitude, 0.001)
-    padding = 55
+    padding = 95
 
     def pixel(point: tuple[float, float]) -> tuple[int, int]:
         latitude, longitude = point
@@ -128,19 +130,13 @@ def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600)
         draw.line(route_pixels, fill="#1565C0", width=7, joint="curve")
 
     stop_points = plan.route_coordinates[:-1] if plan.return_to_start else plan.route_coordinates
-    for index, point in enumerate(stop_points):
-        x, y = pixel(point)
-        is_start = index == 0
-        is_arrival = not plan.return_to_start and index == len(stop_points) - 1
-        color = "#1565C0" if is_start else "#2E7D32" if is_arrival else "#D32F2F"
-        radius = 16 if is_start else 14
-        draw.ellipse(
-            (x - radius, y - radius, x + radius, y + radius), fill=color, outline="white", width=3
-        )
-        label = "D" if is_start else str(index)
-        box = draw.textbbox((0, 0), label)
-        text_width, text_height = box[2] - box[0], box[3] - box[1]
-        draw.text((x - text_width / 2, y - text_height / 2 - 1), label, fill="white")
+    stop_pixels = [pixel(point) for point in stop_points]
+    colors_by_stop = ["#1565C0"]
+    colors_by_stop.extend(
+        "#2E7D32" if not plan.return_to_start and index == len(stop_points) - 1 else "#D32F2F"
+        for index in range(1, len(stop_points))
+    )
+    draw_stop_labels(image, stop_pixels, plan.map_stop_labels, colors_by_stop)
 
     draw.text((padding, 18), f"Tournée · {plan.visit_count} visites", fill="#263238")
     draw.text(
@@ -192,21 +188,34 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
         "Étape",
         "Client",
         "Ville",
-        "Distance depuis le précédent (km)",
+        "Adresse",
         "Temps depuis le précédent (min)",
     ]
-    rows = [columns]
+    header_style = styles["BodyText"].clone("PdfTableHeader")
+    header_style.fontName = "Helvetica-Bold"
+    header_style.fontSize = 7
+    header_style.leading = 8.5
+    header_style.textColor = colors.white
+    rows = [[Paragraph(escape(column), header_style) for column in columns]]
+    cell_style = styles["BodyText"].clone("PdfTableCell")
+    cell_style.fontName = "Helvetica"
+    cell_style.fontSize = 7
+    cell_style.leading = 8.5
     for _, row in export[columns].iterrows():
         rows.append(
             [
                 str(row["Étape"]),
-                str(row["Client"]),
-                str(row["Ville"]),
-                f"{float(row['Distance depuis le précédent (km)']):.1f}",
+                Paragraph(escape(str(row["Client"])), cell_style),
+                Paragraph(escape(str(row["Ville"])), cell_style),
+                Paragraph(escape(str(row["Adresse"])), cell_style),
                 f"{float(row['Temps depuis le précédent (min)']):.0f}",
             ]
         )
-    table = Table(rows, colWidths=[15 * mm, 75 * mm, 45 * mm, 50 * mm, 45 * mm], repeatRows=1)
+    table = Table(
+        rows,
+        colWidths=[15 * mm, 55 * mm, 35 * mm, 105 * mm, 35 * mm],
+        repeatRows=1,
+    )
     table.setStyle(
         TableStyle(
             [

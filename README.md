@@ -13,14 +13,14 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - choix utilisateur du nombre de visites, entre 1 et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
 - retrait de visites depuis le résultat avec recalcul complet de la tournée ;
-- départ depuis la position du navigateur, une adresse ou un client existant ;
+- départ depuis la position du navigateur, une adresse, un client existant ou l'agence du commercial ;
 - adresse d'arrivée spécifique facultative ;
 - cache SQLite des adresses géocodées ;
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
-- export Excel et CSV, PDF avec capture cartographique, ainsi que partage vers Google Maps ;
+- export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
 - authentification Microsoft Entra ID ou identifiant/mot de passe générique ;
@@ -150,6 +150,8 @@ puis permet à l'administrateur de corriger la correspondance :
 | Code client | `Code client`, `ID client`, `Compte` |
 | Nom | `Client`, `Raison sociale`, `Nom compte` |
 | Commercial | `Commercial`, `Vendeur`, `Responsable commercial` |
+| Agence | `Agence`, `Nom agence`, `Agence de référence` |
+| Adresse agence | `Adresse agence`, `Adresse du site` |
 | Adresse | `Adresse`, `Rue`, `Adresse 1` |
 | Code postal | `Code postal`, `CP`, `ZIP` |
 | Ville | `Ville`, `Commune`, `Localité` |
@@ -173,5 +175,5 @@ ruff check .
 Le fichier `.env`, `.streamlit/secrets.toml`, le cache et les portefeuilles placés dans `data/` sont
 ignorés par Git. Les imports sont limités en taille, les archives Office anormales sont refusées et
 seules les données normalisées sont enregistrées avec des requêtes SQL paramétrées. Les valeurs sont
-neutralisées avant les exports CSV et Excel lorsqu'elles pourraient être interprétées comme des
+neutralisées dans les fonctions d'export tableur lorsqu'elles pourraient être interprétées comme des
 formules. Pour une mise en production, préférer Entra ID et un stockage Azure chiffré et persistant.

@@ -15,6 +15,8 @@ def _clients(salesperson: str = "Morgan") -> pd.DataFrame:
             "client_id": ["A"],
             "client_name": ["Alpha"],
             "salesperson": [salesperson],
+            "agency": ["Caen"],
+            "agency_address": ["8 rue Ampère, 14120 Mondeville"],
             "address": ["1 rue du Test"],
             "address_2": [pd.NA],
             "address_3": [pd.NA],
@@ -49,6 +51,8 @@ def test_store_round_trip_keeps_only_normalized_portfolio(store_path: Path) -> N
     assert loaded is not None
     assert loaded.loc[0, "client_name"] == "Alpha"
     assert loaded.loc[0, "salesperson"] == "Morgan"
+    assert loaded.loc[0, "agency"] == "Caen"
+    assert loaded.loc[0, "agency_address"] == "8 rue Ampère, 14120 Mondeville"
     assert metadata.source_name == "clients.xlsx"
     assert loaded_metadata == metadata
 
