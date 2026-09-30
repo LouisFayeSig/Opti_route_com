@@ -137,8 +137,8 @@ class AppStore:
         missing_columns = set(_CLIENT_COLUMNS).difference(clients.columns)
         if missing_columns:
             raise StorageError("Le portefeuille normalisé est incomplet.")
-        if len(clients) > 50_000:
-            raise StorageError("Le portefeuille dépasse la limite de 50 000 lignes.")
+        if len(clients) > 70_000:
+            raise StorageError("Le portefeuille dépasse la limite de 70 000 lignes.")
 
         salespeople = clients["salesperson"].fillna("").astype(str).str.strip()
         invalid_salespeople = salespeople.eq("") | salespeople.eq("Tous")

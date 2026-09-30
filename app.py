@@ -158,8 +158,8 @@ def _admin_import_panel(
             sheet_name=sheet if suffix != ".csv" else 0,
             header_row=int(header_line) - 1,
         )
-        if len(raw) > 50_000 or len(raw.columns) > 200:
-            raise ClientDataError("Le fichier est limité à 50 000 lignes et 200 colonnes.")
+        if len(raw) > 70_000 or len(raw.columns) > 200:
+            raise ClientDataError("Le fichier est limité à 70 000 lignes et 200 colonnes.")
     except Exception as exc:
         st.error(f"Lecture impossible : {exc}")
         return
