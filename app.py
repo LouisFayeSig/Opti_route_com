@@ -277,6 +277,14 @@ def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> 
         st.info("Azure Maps n'est pas configuré : ajoutez la clé dans les secrets Streamlit.")
         return
 
+    run_diagnostic = getattr(azure_client, "static_map_diagnostic", None)
+    if not callable(run_diagnostic):
+        st.warning(
+            "Le processus Streamlit utilise encore une ancienne version du module Azure Maps. "
+            "Redémarrez complètement l'application depuis Manage app, puis réessayez."
+        )
+        return
+
     if not st.button(
         "Tester la capture de carte Azure",
         use_container_width=True,
@@ -285,7 +293,7 @@ def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> 
         return
 
     with st.spinner("Test de l'endpoint Azure Maps…"):
-        diagnostic = azure_client.static_map_diagnostic()
+        diagnostic = run_diagnostic()
 
     details = [
         f"HTTP : {diagnostic.status_code if diagnostic.status_code is not None else 'sans réponse'}",
