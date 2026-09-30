@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import math
 import re
 from collections.abc import Sequence
@@ -7,8 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+from PIL import Image as PillowImage
+from PIL import ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from .image_labels import draw_stop_labels
 
 
 class AzureMapsError(RuntimeError):
@@ -264,21 +269,66 @@ class AzureMapsClient:
         latitude_span = max(max(latitudes) - min(latitudes), 0.005)
         longitude_span = max(max(longitudes) - min(longitudes), 0.005)
         latitude_factor = max(0.2, abs(math.cos(math.radians(center_latitude))))
-        zoom_longitude = math.log2(width * 0.75 * 360 / (256 * longitude_span))
-        zoom_latitude = math.log2(height * 0.75 * 360 * latitude_factor / (256 * latitude_span))
+        tile_size = 512
+        zoom_longitude = math.log2(width * 0.75 * 360 / (tile_size * longitude_span))
+        zoom_latitude = math.log2(
+            height * 0.75 * 360 * latitude_factor / (tile_size * latitude_span)
+        )
         # Une marge supplémentaire réserve de la place aux libellés ajoutés à l'image PDF.
-        zoom = max(1, min(18, int(min(zoom_longitude, zoom_latitude)) - 1))
+        zoom = max(1, min(18, int(min(zoom_longitude, zoom_latitude))))
         return f"{center_longitude:.6f},{center_latitude:.6f}", zoom
 
     @staticmethod
-    def _static_pin_location(point: tuple[float, float], label: str | None = None) -> str:
-        latitude, longitude = point
-        if not label:
-            return f"{longitude:.6f} {latitude:.6f}"
-        # Les apostrophes et barres verticales ont une signification dans la syntaxe Azure.
-        safe_label = re.sub(r"[|\r\n]+", " ", str(label)).replace("'", "’").strip()
-        safe_label = re.sub(r"\s+", " ", safe_label)[:52].rstrip()
-        return f"'{safe_label}'{longitude:.6f} {latitude:.6f}"
+    def _static_map_pixel(
+        point: tuple[float, float],
+        center: tuple[float, float],
+        zoom: int,
+        width: int,
+        height: int,
+    ) -> tuple[int, int]:
+        """Projette une coordonnée GPS sur l'image Azure Maps (Web Mercator)."""
+
+        def world_position(latitude: float, longitude: float) -> tuple[float, float]:
+            latitude = max(-85.05112878, min(85.05112878, latitude))
+            # Azure Maps road tiles use a 512 px tile grid at a given zoom level.
+            world_size = 512 * (2**zoom)
+            x = (longitude + 180) / 360 * world_size
+            latitude_radians = math.radians(latitude)
+            y = (
+                (1 - math.asinh(math.tan(latitude_radians)) / math.pi)
+                / 2
+                * world_size
+            )
+            return x, y
+
+        point_x, point_y = world_position(*point)
+        center_x, center_y = world_position(*center)
+        return round(width / 2 + point_x - center_x), round(height / 2 + point_y - center_y)
+
+    def _static_base_map(self, center: str, zoom: int, width: int, height: int) -> bytes:
+        """Récupère uniquement le fond Azure, sans données de tournée dans l'URL."""
+        response = self._request(
+            "GET",
+            "/map/static",
+            params={
+                "api-version": "2024-04-01",
+                "tilesetId": "microsoft.base.road",
+                "center": center,
+                "zoom": zoom,
+                "width": width,
+                "height": height,
+                "language": "fr-FR",
+            },
+            headers={**self._headers, "Accept": "image/png"},
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError:
+            self._json_response(response)
+            raise AssertionError("unreachable")
+        if not response.content.startswith(b"\x89PNG"):
+            raise AzureMapsError("Azure Maps n'a pas renvoyé une image PNG valide.")
+        return response.content
 
     def static_route_map(
         self,
@@ -294,57 +344,40 @@ class AzureMapsClient:
         path_coordinates = self._downsample_path(geometry)
         view_coordinates = [*path_coordinates, *route_coordinates]
         center, zoom = self._static_map_view(view_coordinates, width, height)
-        path_value = "lc1565C0|lw5|la0.85||" + "|".join(
-            f"{longitude:.6f} {latitude:.6f}" for latitude, longitude in path_coordinates
-        )
         stops = list(route_coordinates)
         if return_to_start and stops[-1] == stops[0]:
             stops = stops[:-1]
         labels = list(stop_labels or ())
+        labels.extend(str(index) for index in range(len(labels), len(stops)))
 
-        def pin_location(index: int) -> str:
-            label = labels[index] if index < len(labels) else None
-            return self._static_pin_location(stops[index], label)
-
-        params: list[tuple[str, str | int]] = [
-            ("api-version", "2024-04-01"),
-            ("tilesetId", "microsoft.base.road"),
-            ("center", center),
-            ("zoom", zoom),
-            ("width", width),
-            ("height", height),
-            ("language", "fr-FR"),
-            ("path", path_value),
-            ("pins", f"default|co1565C0|lc1F2937|ls11||{pin_location(0)}"),
-        ]
-        if len(stops) > 1:
-            red_indexes = range(1, len(stops)) if return_to_start else range(1, len(stops) - 1)
-            red_locations = [pin_location(index) for index in red_indexes]
-            if red_locations:
-                params.append(
-                    (
-                        "pins",
-                        "default|coD32F2F|lc1F2937|ls11||" + "|".join(red_locations),
-                    )
-                )
-            if not return_to_start:
-                params.append(
-                    ("pins", f"default|co2E7D32|lc1F2937|ls11||{pin_location(len(stops) - 1)}")
-                )
-        response = self._request(
-            "GET",
-            "/map/static",
-            params=params,
-            headers={**self._headers, "Accept": "image/png"},
+        # Évite les limites et filtrages potentiels de path/pins : le fond est demandé seul,
+        # puis le tracé, les repères et les libellés sont superposés localement.
+        image = PillowImage.open(io.BytesIO(self._static_base_map(center, zoom, width, height))).convert(
+            "RGB"
         )
-        try:
-            response.raise_for_status()
-        except requests.HTTPError:
-            self._json_response(response)
-            raise AssertionError("unreachable")
-        if not response.content.startswith(b"\x89PNG"):
-            raise AzureMapsError("Azure Maps n'a pas renvoyé une image PNG valide.")
-        return response.content
+        center_longitude, center_latitude = (float(value) for value in center.split(","))
+        map_center = (center_latitude, center_longitude)
+        route_pixels = [
+            self._static_map_pixel(point, map_center, zoom, width, height)
+            for point in path_coordinates
+        ]
+        if len(route_pixels) > 1:
+            draw = ImageDraw.Draw(image)
+            draw.line(route_pixels, fill="white", width=11, joint="curve")
+            draw.line(route_pixels, fill="#1565C0", width=7, joint="curve")
+
+        stop_pixels = [
+            self._static_map_pixel(point, map_center, zoom, width, height) for point in stops
+        ]
+        colors_by_stop = ["#1565C0"]
+        colors_by_stop.extend(
+            "#2E7D32" if not return_to_start and index == len(stops) - 1 else "#D32F2F"
+            for index in range(1, len(stops))
+        )
+        draw_stop_labels(image, stop_pixels, labels, colors_by_stop)
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
 
     @staticmethod
     def _diagnostic_header(response: requests.Response, name: str) -> str | None:
