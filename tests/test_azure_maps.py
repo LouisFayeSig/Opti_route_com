@@ -14,11 +14,13 @@ class FakeResponse:
         payload: dict[str, Any] | None,
         status_code: int = 200,
         content: bytes = b"",
+        headers: dict[str, str] | None = None,
     ):
         self.payload = payload
         self.status_code = status_code
         self.text = ""
         self.content = content
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -227,3 +229,63 @@ def test_static_route_map_attaches_labels_to_the_real_azure_pins() -> None:
     pin_values = [value for name, value in session.calls[0][2]["params"] if name == "pins"]
     assert any("'D · Départ'-0.370000 49.180000" in value for value in pin_values)
     assert any("'1 · Client Alpha'-0.320000 49.200000" in value for value in pin_values)
+
+
+def test_static_map_diagnostic_reports_a_available_png_without_leaking_the_key() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                None,
+                content=b"\x89PNG\r\n\x1a\nimage",
+                headers={
+                    "content-type": "image/png",
+                    "x-ms-request-id": "azure-request-123",
+                },
+            )
+        ]
+    )
+    client = AzureMapsClient("https://example.test", "top-secret-key")
+    client.session = session
+
+    diagnostic = client.static_map_diagnostic()
+
+    assert diagnostic.available is True
+    assert diagnostic.status_code == 200
+    assert diagnostic.content_type == "image/png"
+    assert diagnostic.request_id == "azure-request-123"
+    assert diagnostic.response_kind == "png"
+    assert "top-secret-key" not in diagnostic.message
+    assert session.calls[0][0:2] == ("GET", "https://example.test/map/static")
+    assert session.calls[0][2]["headers"]["subscription-key"] == "top-secret-key"
+    assert session.calls[0][2]["headers"]["Accept"] == "image/png"
+    assert "top-secret-key" not in session.calls[0][1]
+    assert "top-secret-key" not in str(session.calls[0][2]["params"])
+
+
+def test_static_map_diagnostic_sanitizes_a_403_html_response() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                None,
+                status_code=403,
+                headers={
+                    "content-type": "text/html; charset=utf-8",
+                    "x-ms-request-id": "azure-request-403",
+                },
+            )
+        ]
+    )
+    session.responses[0].text = "<html>proxy details and top-secret-key</html>"
+    client = AzureMapsClient("https://example.test", "top-secret-key")
+    client.session = session
+
+    diagnostic = client.static_map_diagnostic()
+
+    assert diagnostic.available is False
+    assert diagnostic.status_code == 403
+    assert diagnostic.content_type == "text/html"
+    assert diagnostic.request_id == "azure-request-403"
+    assert diagnostic.response_kind == "html"
+    assert "403" in diagnostic.message
+    assert "proxy details" not in diagnostic.message
+    assert "top-secret-key" not in diagnostic.message

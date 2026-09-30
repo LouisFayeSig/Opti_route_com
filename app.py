@@ -268,19 +268,62 @@ def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) ->
             st.rerun()
 
 
+def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> None:
+    st.caption(
+        "Ce test appelle uniquement l'image statique Azure Maps sur une zone neutre, "
+        "sans donnée client ni affichage de clé."
+    )
+    if azure_client is None:
+        st.info("Azure Maps n'est pas configuré : ajoutez la clé dans les secrets Streamlit.")
+        return
+
+    if not st.button(
+        "Tester la capture de carte Azure",
+        use_container_width=True,
+        key="azure_static_map_diagnostic",
+    ):
+        return
+
+    with st.spinner("Test de l'endpoint Azure Maps…"):
+        diagnostic = azure_client.static_map_diagnostic()
+
+    details = [
+        f"HTTP : {diagnostic.status_code if diagnostic.status_code is not None else 'sans réponse'}",
+        f"Type : {diagnostic.content_type or 'non communiqué'}",
+        f"Format : {diagnostic.response_kind}",
+    ]
+    if diagnostic.available:
+        st.success(diagnostic.message)
+    else:
+        st.error(diagnostic.message)
+        if diagnostic.response_kind == "html":
+            st.warning(
+                "La réponse est une page HTML, et non une erreur Azure Maps JSON. "
+                "Cela indique généralement un proxy, un WAF ou une URL intermédiaire."
+            )
+    st.caption(" · ".join(details))
+    if diagnostic.request_id:
+        st.caption(f"Identifiant de requête Azure : `{diagnostic.request_id}`")
+
+
 def _render_admin_panel(
     store: AppStore,
     user: AuthenticatedUser,
     clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
     configuration: RouteConfiguration,
+    azure_client: AzureMapsClient | None,
 ) -> None:
     with st.expander("⚙️ Administration", expanded=clients is None):
-        portfolio_tab, settings_tab = st.tabs(["Portefeuille clients", "Contraintes"])
+        portfolio_tab, settings_tab, diagnostic_tab = st.tabs(
+            ["Portefeuille clients", "Contraintes", "Diagnostic Azure"]
+        )
         with portfolio_tab:
             _admin_import_panel(store, user, clients, metadata)
         with settings_tab:
             _admin_settings_panel(store, configuration)
+        with diagnostic_tab:
+            _azure_static_map_diagnostic_panel(azure_client)
 
 
 def _geocode_address(address: str, cache: GeocodeCache, point_name: str) -> StartPoint:
@@ -525,6 +568,7 @@ if authenticated_user.is_admin:
         clients,
         portfolio_metadata,
         route_configuration,
+        azure_client,
     )
 
 if clients is None or portfolio_metadata is None:

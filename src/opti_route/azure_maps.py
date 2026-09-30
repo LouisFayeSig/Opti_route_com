@@ -24,6 +24,18 @@ class GeocodeResult:
     formatted_address: str
 
 
+@dataclass(frozen=True)
+class StaticMapDiagnostic:
+    """Résultat sûr à afficher d'un test de l'API de rendu statique."""
+
+    available: bool
+    status_code: int | None
+    content_type: str | None
+    request_id: str | None
+    response_kind: str
+    message: str
+
+
 class AzureMapsClient:
     API_VERSION = "2025-01-01"
 
@@ -333,3 +345,71 @@ class AzureMapsClient:
         if not response.content.startswith(b"\x89PNG"):
             raise AzureMapsError("Azure Maps n'a pas renvoyé une image PNG valide.")
         return response.content
+
+    @staticmethod
+    def _diagnostic_header(response: requests.Response, name: str) -> str | None:
+        value = response.headers.get(name)
+        if not value:
+            return None
+        # Les identifiants Azure sont utiles au support, mais n'exposons jamais un en-tête libre.
+        return re.sub(r"[^a-zA-Z0-9._:=/-]", "", str(value))[:128] or None
+
+    def static_map_diagnostic(self) -> StaticMapDiagnostic:
+        """Teste /map/static avec une zone neutre, sans divulguer la clé ni la réponse brute."""
+        try:
+            response = self._request(
+                "GET",
+                "/map/static",
+                params={
+                    "api-version": "2024-04-01",
+                    "tilesetId": "microsoft.base.road",
+                    "center": "2.3522,48.8566",
+                    "zoom": 10,
+                    "width": 320,
+                    "height": 200,
+                    "language": "fr-FR",
+                },
+                headers={**self._headers, "Accept": "image/png"},
+            )
+        except AzureMapsError as exc:
+            return StaticMapDiagnostic(
+                available=False,
+                status_code=exc.status_code,
+                content_type=None,
+                request_id=None,
+                response_kind="network_error",
+                message=str(exc),
+            )
+
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        content_type = content_type or None
+        request_id = self._diagnostic_header(response, "x-ms-request-id") or self._diagnostic_header(
+            response, "x-ms-correlation-request-id"
+        )
+        is_png = response.content.startswith(b"\x89PNG")
+        if response.status_code == 200 and is_png:
+            return StaticMapDiagnostic(
+                available=True,
+                status_code=200,
+                content_type=content_type,
+                request_id=request_id,
+                response_kind="png",
+                message="La carte statique Azure Maps est accessible.",
+            )
+
+        response_kind = "html" if (
+            content_type == "text/html" or response.content.lstrip().startswith(b"<")
+        ) else "json" if content_type == "application/json" else "unexpected_response"
+        message = (
+            f"Azure Maps a répondu {response.status_code}."
+            if response.status_code >= 400
+            else "Azure Maps n'a pas renvoyé une image PNG valide."
+        )
+        return StaticMapDiagnostic(
+            available=False,
+            status_code=response.status_code,
+            content_type=content_type,
+            request_id=request_id,
+            response_kind=response_kind,
+            message=message,
+        )
