@@ -254,8 +254,19 @@ class AzureMapsClient:
         latitude_factor = max(0.2, abs(math.cos(math.radians(center_latitude))))
         zoom_longitude = math.log2(width * 0.75 * 360 / (256 * longitude_span))
         zoom_latitude = math.log2(height * 0.75 * 360 * latitude_factor / (256 * latitude_span))
-        zoom = max(1, min(18, int(min(zoom_longitude, zoom_latitude))))
+        # Une marge supplémentaire réserve de la place aux libellés ajoutés à l'image PDF.
+        zoom = max(1, min(18, int(min(zoom_longitude, zoom_latitude)) - 1))
         return f"{center_longitude:.6f},{center_latitude:.6f}", zoom
+
+    @staticmethod
+    def _static_pin_location(point: tuple[float, float], label: str | None = None) -> str:
+        latitude, longitude = point
+        if not label:
+            return f"{longitude:.6f} {latitude:.6f}"
+        # Les apostrophes et barres verticales ont une signification dans la syntaxe Azure.
+        safe_label = re.sub(r"[|\r\n]+", " ", str(label)).replace("'", "’").strip()
+        safe_label = re.sub(r"\s+", " ", safe_label)[:52].rstrip()
+        return f"'{safe_label}'{longitude:.6f} {latitude:.6f}"
 
     def static_route_map(
         self,
@@ -264,18 +275,25 @@ class AzureMapsClient:
         return_to_start: bool,
         width: int = 1200,
         height: int = 650,
+        stop_labels: Sequence[str] | None = None,
     ) -> bytes:
         if len(route_coordinates) < 2:
             raise AzureMapsError("La tournée ne contient pas assez de points pour créer une carte.")
         path_coordinates = self._downsample_path(geometry)
-        center, zoom = self._static_map_view(path_coordinates, width, height)
+        view_coordinates = [*path_coordinates, *route_coordinates]
+        center, zoom = self._static_map_view(view_coordinates, width, height)
         path_value = "lc1565C0|lw5|la0.85||" + "|".join(
             f"{longitude:.6f} {latitude:.6f}" for latitude, longitude in path_coordinates
         )
         stops = list(route_coordinates)
         if return_to_start and stops[-1] == stops[0]:
             stops = stops[:-1]
-        start_latitude, start_longitude = stops[0]
+        labels = list(stop_labels or ())
+
+        def pin_location(index: int) -> str:
+            label = labels[index] if index < len(labels) else None
+            return self._static_pin_location(stops[index], label)
+
         params: list[tuple[str, str | int]] = [
             ("api-version", "2024-04-01"),
             ("tilesetId", "microsoft.base.road"),
@@ -285,24 +303,22 @@ class AzureMapsClient:
             ("height", height),
             ("language", "fr-FR"),
             ("path", path_value),
-            ("pins", f"default|co1565C0||{start_longitude:.6f} {start_latitude:.6f}"),
+            ("pins", f"default|co1565C0|lc1F2937|ls11||{pin_location(0)}"),
         ]
-        visit_stops = stops[1:]
-        if visit_stops:
-            red_stops = visit_stops if return_to_start else visit_stops[:-1]
-            if red_stops:
+        if len(stops) > 1:
+            red_indexes = range(1, len(stops)) if return_to_start else range(1, len(stops) - 1)
+            red_locations = [pin_location(index) for index in red_indexes]
+            if red_locations:
                 params.append(
                     (
                         "pins",
-                        "default|coD32F2F||"
-                        + "|".join(
-                            f"{longitude:.6f} {latitude:.6f}" for latitude, longitude in red_stops
-                        ),
+                        "default|coD32F2F|lc1F2937|ls11||" + "|".join(red_locations),
                     )
                 )
             if not return_to_start:
-                latitude, longitude = visit_stops[-1]
-                params.append(("pins", f"default|co2E7D32||{longitude:.6f} {latitude:.6f}"))
+                params.append(
+                    ("pins", f"default|co2E7D32|lc1F2937|ls11||{pin_location(len(stops) - 1)}")
+                )
         response = self._request(
             "GET",
             "/map/static",

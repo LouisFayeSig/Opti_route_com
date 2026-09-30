@@ -44,6 +44,8 @@ _CLIENT_COLUMNS = (
     "client_id",
     "client_name",
     "salesperson",
+    "agency",
+    "agency_address",
     "address",
     "address_2",
     "address_3",

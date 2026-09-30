@@ -27,7 +27,7 @@ from opti_route.data import (
     suggest_column_mapping,
     validate_uploaded_file,
 )
-from opti_route.exporting import csv_bytes, excel_bytes, google_maps_url, pdf_bytes
+from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
 from opti_route.map_view import render_map
 from opti_route.planner import (
@@ -88,6 +88,8 @@ FIELD_LABELS = {
     "client_id": "Code client",
     "client_name": "Nom du client",
     "salesperson": "Commercial",
+    "agency": "Agence",
+    "agency_address": "Adresse agence",
     "address": "Adresse / rue",
     "address_2": "Complément d'adresse 1",
     "address_3": "Complément d'adresse 2",
@@ -284,7 +286,12 @@ def _render_admin_panel(
 def _geocode_address(address: str, cache: GeocodeCache, point_name: str) -> StartPoint:
     cached = cache.get(address)
     if cached:
-        return StartPoint(cached.latitude, cached.longitude, cached.formatted_address)
+        return StartPoint(
+            cached.latitude,
+            cached.longitude,
+            cached.formatted_address,
+            cached.formatted_address,
+        )
     if azure_client is None:
         raise PlanningError(
             f"Configurez AZURE_MAPS_SUBSCRIPTION_KEY pour géocoder l'adresse {point_name}."
@@ -294,35 +301,48 @@ def _geocode_address(address: str, cache: GeocodeCache, point_name: str) -> Star
     except AzureMapsError as exc:
         raise PlanningError(str(exc)) from exc
     cache.set(address, result.latitude, result.longitude, result.formatted_address)
-    return StartPoint(result.latitude, result.longitude, result.formatted_address)
-
-
-def _address_fields(prefix: str, title: str) -> list[str]:
-    st.markdown(f"##### {title}")
-    street = st.text_input(
-        "Rue et numéro",
-        placeholder="12 rue de la Paix",
-        key=f"{prefix}_street",
+    return StartPoint(
+        result.latitude,
+        result.longitude,
+        result.formatted_address,
+        result.formatted_address,
     )
-    postal_column, city_column = st.columns([0.38, 0.62])
-    postal_code = postal_column.text_input(
-        "Code postal",
-        placeholder="14000",
-        key=f"{prefix}_postal_code",
-    )
-    city = city_column.text_input(
-        "Ville",
-        placeholder="Caen",
-        key=f"{prefix}_city",
-    )
-    country = st.text_input("Pays", value="France", key=f"{prefix}_country")
-    return [street, postal_code, city, country]
 
 
-def _validated_address(parts: list[str], point_name: str) -> str:
-    if not parts[0].strip() or not parts[2].strip():
-        raise PlanningError(f"Renseignez au minimum la rue et la ville {point_name}.")
-    return ", ".join(part.strip() for part in parts if part.strip())
+def _address_field(prefix: str, title: str) -> str:
+    return st.text_input(
+        title,
+        placeholder="12 rue de la Paix, 14000 Caen, France",
+        key=f"{prefix}_address",
+        help="Saisissez l'adresse complète sur une seule ligne pour améliorer le géocodage.",
+    )
+
+
+def _validated_address(address: str, point_name: str) -> str:
+    address = address.strip()
+    if len(address) < 5:
+        raise PlanningError(f"Renseignez une adresse complète {point_name}.")
+    return address
+
+
+def _agency_choices(clients: pd.DataFrame) -> pd.DataFrame:
+    """Retourne les agences utilisables, la plus représentée étant la référence par défaut."""
+    if not {"agency", "agency_address"}.issubset(clients.columns):
+        return pd.DataFrame(columns=["agency", "agency_address", "client_count"])
+    agencies = clients.loc[:, ["agency", "agency_address"]].copy()
+    for column in ["agency", "agency_address"]:
+        agencies[column] = agencies[column].fillna("").astype(str).str.strip()
+        agencies.loc[agencies[column].isin({"<NA>", "nan", "None"}), column] = ""
+    agencies = agencies[(agencies["agency"] != "") & (agencies["agency_address"] != "")]
+    if agencies.empty:
+        return pd.DataFrame(columns=["agency", "agency_address", "client_count"])
+    return (
+        agencies.groupby(["agency", "agency_address"], as_index=False, sort=False)
+        .size()
+        .rename(columns={"size": "client_count"})
+        .sort_values(["client_count", "agency"], ascending=[False, True], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def _format_duration(seconds: int) -> str:
@@ -443,29 +463,15 @@ def _render_results(
             st.error(f"Le recalcul de la tournée a échoué : {exc}")
 
     with st.expander("Exporter ou partager la tournée", expanded=True):
-        export_columns = st.columns([1, 1, 1, 1.25])
+        export_columns = st.columns([1, 1.25])
         export_columns[0].download_button(
-            "Télécharger Excel",
-            data=excel_bytes(plan),
-            file_name=f"{plan.export_stem}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-        export_columns[1].download_button(
-            "Télécharger CSV",
-            data=csv_bytes(plan),
-            file_name=f"{plan.export_stem}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-        export_columns[2].download_button(
             "Télécharger PDF",
             data=pdf_bytes(plan),
             file_name=f"{plan.export_stem}.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
-        export_columns[3].link_button(
+        export_columns[1].link_button(
             "Ouvrir dans Google Maps",
             google_maps_url(plan),
             use_container_width=True,
@@ -609,14 +615,17 @@ with controls_column:
     selected_clients = selection_source.loc[selected_mask].copy()
     st.caption(f"{len(selected_clients)} entreprises sélectionnées")
 
+    agency_options = _agency_choices(assigned_clients)
     start_mode = st.radio(
         "Point de départ",
-        ["Ma position", "Adresse personnalisée", "Client existant"],
+        ["Ma position", "Adresse personnalisée", "Client existant", "Agence"],
         horizontal=True,
     )
     location_value = None
-    start_address_parts: list[str] = []
+    start_address = ""
     appointment_id: str | None = None
+    selected_agency_name: str | None = None
+    selected_agency_address: str | None = None
     if start_mode == "Ma position":
         location_value = browser_location(key="browser_geolocation", default=None)
         if location_value:
@@ -625,8 +634,8 @@ with controls_column:
                 icon="📍",
             )
     elif start_mode == "Adresse personnalisée":
-        start_address_parts = _address_fields("start", "Adresse de départ")
-    else:
+        start_address = _address_field("start", "Adresse de départ")
+    elif start_mode == "Client existant":
         appointment_options = assigned_clients.copy()
         appointment_options["display"] = (
             appointment_options["client_name"].astype(str)
@@ -639,6 +648,26 @@ with controls_column:
             format_func=lambda index: appointment_options.at[index, "display"],
         )
         appointment_id = str(appointment_options.at[selected_appointment, "client_id"])
+    else:
+        if agency_options.empty:
+            st.warning(
+                "Aucune agence avec une adresse exploitable n'est renseignée pour ce commercial."
+            )
+        else:
+            selected_agency_index = st.selectbox(
+                "Agence de départ",
+                agency_options.index,
+                index=0,
+                format_func=lambda index: (
+                    f"{agency_options.at[index, 'agency']} — "
+                    f"{agency_options.at[index, 'agency_address']}"
+                ),
+                help="L'agence de référence du commercial est proposée par défaut.",
+            )
+            selected_agency_name = str(agency_options.at[selected_agency_index, "agency"])
+            selected_agency_address = str(
+                agency_options.at[selected_agency_index, "agency_address"]
+            )
 
     visits_label = (
         "Nombre de visites complémentaires"
@@ -656,9 +685,9 @@ with controls_column:
     )
 
     custom_arrival = st.toggle("Utiliser une adresse d'arrivée spécifique", value=False)
-    arrival_address_parts: list[str] = []
+    arrival_address = ""
     if custom_arrival:
-        arrival_address_parts = _address_fields("arrival", "Adresse d'arrivée")
+        arrival_address = _address_field("arrival", "Adresse d'arrivée")
 
     with st.container(border=True):
         st.markdown("##### Contraintes définies par l'administrateur")
@@ -727,9 +756,9 @@ with controls_column:
                     "Ma position",
                 )
             elif start_mode == "Adresse personnalisée":
-                start_address = _validated_address(start_address_parts, "de départ")
+                start_address = _validated_address(start_address, "de départ")
                 start = _geocode_address(start_address, cache, "de départ")
-            else:
+            elif start_mode == "Client existant":
                 appointment = enriched_clients[
                     enriched_clients["client_id"].astype(str) == appointment_id
                 ]
@@ -742,16 +771,34 @@ with controls_column:
                     float(row["latitude"]),
                     float(row["longitude"]),
                     f"Rendez-vous · {row['client_name']}",
+                    str(row.get("full_address", "")) or None,
+                )
+            else:
+                if not selected_agency_name or not selected_agency_address:
+                    raise PlanningError(
+                        "Aucune agence de départ exploitable n'est disponible pour ce commercial."
+                    )
+                geocoded_agency = _geocode_address(
+                    selected_agency_address,
+                    cache,
+                    "de l'agence",
+                )
+                start = StartPoint(
+                    geocoded_agency.latitude,
+                    geocoded_agency.longitude,
+                    f"Agence · {selected_agency_name}",
+                    geocoded_agency.address,
                 )
 
             end: StartPoint | None = None
             if custom_arrival:
-                arrival_address = _validated_address(arrival_address_parts, "d'arrivée")
+                arrival_address = _validated_address(arrival_address, "d'arrivée")
                 geocoded_end = _geocode_address(arrival_address, cache, "d'arrivée")
                 end = StartPoint(
                     geocoded_end.latitude,
                     geocoded_end.longitude,
                     f"Arrivée · {geocoded_end.label}",
+                    geocoded_end.address,
                 )
 
             plan = build_route_plan(

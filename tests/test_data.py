@@ -21,6 +21,8 @@ def test_detects_real_world_french_column_variants() -> None:
             "cli_code": ["C-001"],
             "rai_soc": ["Client Démo"],
             "nom": ["Camille Martin"],
+            "Agence": ["Caen"],
+            "Adresse agence": ["8 rue Ampère, 14120 Mondeville"],
             "adr1": ["1 rue du Test"],
             "adr2": ["Bâtiment A"],
             "cp": ["14000"],
@@ -35,6 +37,8 @@ def test_detects_real_world_french_column_variants() -> None:
     assert mapping["salesperson"] == "nom"
     assert clients.loc[0, "client_id"] == "C-001"
     assert clients.loc[0, "salesperson"] == "Camille Martin"
+    assert clients.loc[0, "agency"] == "Caen"
+    assert clients.loc[0, "agency_address"] == "8 rue Ampère, 14120 Mondeville"
     assert clients.loc[0, "full_address"] == "1 rue du Test, Bâtiment A, 14000, Caen, France"
 
 

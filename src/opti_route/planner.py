@@ -19,6 +19,7 @@ class StartPoint:
     latitude: float
     longitude: float
     label: str = "Départ"
+    address: str | None = None
 
 
 @dataclass
@@ -46,6 +47,14 @@ class RoutePlan:
     def export_stem(self) -> str:
         return f"tournee_commerciale_{self.created_at:%Y%m%d_%H%M%S}"
 
+    @property
+    def map_stop_labels(self) -> list[str]:
+        labels = [f"D · {self.start.label}"]
+        labels.extend(f"{int(row['Ordre'])} · {row['Client']}" for _, row in self.table.iterrows())
+        if self.end is not None:
+            labels.append(f"A · {self.end.label}")
+        return labels
+
     def itinerary_table(self) -> pd.DataFrame:
         """Ajoute le départ et, le cas échéant, le retour au détail des visites."""
         rows: list[dict[str, object]] = [
@@ -53,7 +62,7 @@ class RoutePlan:
                 "Étape": "Départ",
                 "Client": self.start.label,
                 "Ville": "",
-                "Adresse": self.start.label,
+                "Adresse": self.start.address or self.start.label,
                 "Distance": 0.0,
                 "Temps": 0.0,
                 "Distance cumulée": 0.0,
@@ -84,7 +93,7 @@ class RoutePlan:
                     "Étape": "Retour" if is_return else "Arrivée",
                     "Client": destination.label,
                     "Ville": "",
-                    "Adresse": destination.label,
+                    "Adresse": destination.address or destination.label,
                     "Distance": (self.total_distance_m - previous_distance_m) / 1000,
                     "Temps": (self.total_duration_s - previous_duration_s) / 60,
                     "Distance cumulée": self.total_distance_m / 1000,
@@ -197,10 +206,15 @@ def build_route_plan(
         except AzureMapsError as exc:
             warnings.append(f"Tracé routier Azure indisponible : {exc}")
         try:
+            static_labels = [f"D · {start.label}"]
+            static_labels.extend(f"{row['Ordre']} · {row['Client']}" for row in rows)
+            if end is not None:
+                static_labels.append(f"A · {end.label}")
             map_image = azure_client.static_route_map(
                 route_coordinates,
                 geometry,
                 return_to_start=return_to_start,
+                stop_labels=static_labels,
             )
         except AzureMapsError as exc:
             warnings.append(f"Capture Azure indisponible pour le PDF : {exc}")

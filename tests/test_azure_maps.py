@@ -208,3 +208,22 @@ def test_static_route_map_uses_current_render_api() -> None:
     assert ("api-version", "2024-04-01") in params
     assert any(name == "path" for name, _ in params)
     assert sum(name == "pins" for name, _ in params) == 2
+
+
+def test_static_route_map_attaches_labels_to_the_real_azure_pins() -> None:
+    source = b"\x89PNG\r\n\x1a\nimage"
+    session = FakeSession([FakeResponse(None, content=source)])
+    client = AzureMapsClient("https://example.test", "secret")
+    client.session = session
+
+    result = client.static_route_map(
+        [(49.18, -0.37), (49.20, -0.32)],
+        [(49.18, -0.37), (49.20, -0.32)],
+        return_to_start=False,
+        stop_labels=["D · Départ", "1 · Client Alpha"],
+    )
+
+    assert result == source
+    pin_values = [value for name, value in session.calls[0][2]["params"] if name == "pins"]
+    assert any("'D · Départ'-0.370000 49.180000" in value for value in pin_values)
+    assert any("'1 · Client Alpha'-0.320000 49.200000" in value for value in pin_values)

@@ -53,6 +53,18 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
                 "radius": 520,
             }
         )
+    placements = [
+        ([0, -20], "middle", "bottom"),
+        ([18, -14], "start", "bottom"),
+        ([-18, -14], "end", "bottom"),
+        ([18, 14], "start", "top"),
+        ([-18, 14], "end", "top"),
+    ]
+    for index, point in enumerate(points):
+        offset, anchor, baseline = placements[index % len(placements)]
+        point["label_offset"] = offset
+        point["label_anchor"] = anchor
+        point["label_baseline"] = baseline
     return points
 
 
@@ -93,14 +105,14 @@ def _persistent_label_layer(points: list[dict[str, object]]) -> pdk.Layer:
         get_position="[longitude, latitude]",
         get_text="map_label",
         get_color=[31, 41, 55, 255],
-        get_size=15,
-        get_pixel_offset=[0, -22],
-        get_alignment_baseline=String("bottom"),
-        get_text_anchor=String("middle"),
+        get_size=11,
+        get_pixel_offset="label_offset",
+        get_alignment_baseline="label_baseline",
+        get_text_anchor="label_anchor",
         billboard=True,
         background=True,
         get_background_color=[255, 255, 255, 225],
-        background_padding=[5, 3],
+        background_padding=[3, 2],
         background_border_radius=4,
         font_family=String("Arial, sans-serif"),
         font_weight=600,
@@ -238,10 +250,10 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
           filter:['==',['geometry-type'],'Point'],
           iconOptions: {{image: 'none'}},
           textOptions: {{
-            textField:['get','map_label'], color:'#1F2937', size:14,
+            textField:['get','map_label'], color:'#1F2937', size:11,
             font:['StandardFont-Bold'], offset:[0,-1.7],
             haloColor:'#FFFFFF', haloWidth:2,
-            allowOverlap:true, ignorePlacement:true
+            allowOverlap:false, ignorePlacement:false, optional:true
           }}
         }}));
         const popup = new atlas.Popup({{pixelOffset:[0,-18]}});
