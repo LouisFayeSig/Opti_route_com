@@ -69,6 +69,12 @@ st.markdown(
         background:linear-gradient(145deg,#f8fbff,#f3f7fa);padding:2rem}
       .opti-empty-icon {font-size:3rem;margin-bottom:.8rem}
       [data-testid="stHorizontalBlock"] {align-items:stretch;}
+      .opti-step-title {padding:.55rem .7rem;border-radius:9px;font-weight:700;margin-bottom:.65rem}
+      .opti-step-prospects {background:#eff6ff;color:#1d4ed8;border-left:4px solid #2563eb}
+      .opti-step-start {background:#ecfdf5;color:#047857;border-left:4px solid #10b981}
+      .opti-step-arrival {background:#fff7ed;color:#c2410c;border-left:4px solid #f97316}
+      .opti-step-review {background:#f5f3ff;color:#6d28d9;border-left:4px solid #8b5cf6}
+      div[data-testid="stVerticalBlockBorderWrapper"] {border-radius:12px;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -376,26 +382,6 @@ def _validated_address(address: str, point_name: str) -> str:
     return address
 
 
-def _agency_choices(clients: pd.DataFrame) -> pd.DataFrame:
-    """Retourne les agences utilisables, la plus représentée étant la référence par défaut."""
-    if not {"agency", "agency_address"}.issubset(clients.columns):
-        return pd.DataFrame(columns=["agency", "agency_address", "client_count"])
-    agencies = clients.loc[:, ["agency", "agency_address"]].copy()
-    for column in ["agency", "agency_address"]:
-        agencies[column] = agencies[column].fillna("").astype(str).str.strip()
-        agencies.loc[agencies[column].isin({"<NA>", "nan", "None"}), column] = ""
-    agencies = agencies[(agencies["agency"] != "") & (agencies["agency_address"] != "")]
-    if agencies.empty:
-        return pd.DataFrame(columns=["agency", "agency_address", "client_count"])
-    return (
-        agencies.groupby(["agency", "agency_address"], as_index=False, sort=False)
-        .size()
-        .rename(columns={"size": "client_count"})
-        .sort_values(["client_count", "agency"], ascending=[False, True], kind="stable")
-        .reset_index(drop=True)
-    )
-
-
 def _format_duration(seconds: int) -> str:
     hours, remainder = divmod(round(seconds / 60), 60)
     return f"{hours} h {remainder:02d}" if hours else f"{remainder} min"
@@ -436,11 +422,15 @@ def _render_results(
     plan: RoutePlan,
     route_client: AzureMapsClient | None,
 ) -> None:
+    st.markdown(
+        '<div class="opti-step-title opti-step-review">4. Revoir le parcours</div>',
+        unsafe_allow_html=True,
+    )
     st.subheader("Ordre de visite")
     st.caption(
-        "Décochez une ou plusieurs entreprises, puis appliquez la sélection pour recalculer la tournée."
+        "Décochez une visite facultative, puis appliquez la sélection pour recalculer la tournée."
     )
-    display = plan.table[
+    visit_display = plan.table[
         [
             "Ordre",
             "Client",
@@ -452,6 +442,23 @@ def _render_results(
             "Temps cumulé",
         ]
     ].copy()
+    visit_display["Rendez-vous prévu"] = plan.table.get("Rendez-vous prévu", False)
+    start_row = pd.DataFrame(
+        [
+            {
+                "Ordre": 0,
+                "Client": f"Départ · {plan.start.label}",
+                "Ville": "",
+                "Adresse": plan.start.address or plan.start.label,
+                "Distance": 0.0,
+                "Temps": 0.0,
+                "Distance cumulée": 0.0,
+                "Temps cumulé": 0.0,
+                "Rendez-vous prévu": False,
+            }
+        ]
+    )
+    display = pd.concat([start_row, visit_display], ignore_index=True)
     display.insert(0, "Conserver", True)
     result_identifier = hashlib.sha1(
         (
@@ -473,24 +480,36 @@ def _render_results(
             "Temps",
             "Distance cumulée",
             "Temps cumulé",
+            "Rendez-vous prévu",
         ],
         column_config={
             "Conserver": st.column_config.CheckboxColumn("Visiter", required=True, width="small"),
             "Ordre": st.column_config.NumberColumn("Ordre", format="%d"),
+            "Rendez-vous prévu": st.column_config.CheckboxColumn(
+                "Rendez-vous", disabled=True, width="small"
+            ),
             "Distance": st.column_config.NumberColumn("Distance", format="%.1f km"),
             "Temps": st.column_config.NumberColumn("Temps", format="%.0f min"),
             "Distance cumulée": st.column_config.NumberColumn("Cumul", format="%.1f km"),
             "Temps cumulé": st.column_config.NumberColumn("Temps cumulé", format="%.0f min"),
         },
     )
-    retained_positions = [
+    selected_positions = [
         position
         for position, retained in enumerate(
-            edited_display["Conserver"].fillna(False).astype(bool).tolist()
+            edited_display.iloc[1:]["Conserver"].fillna(False).astype(bool).tolist()
         )
         if retained
     ]
-    selection_changed = len(retained_positions) != plan.visit_count
+    required_positions = [
+        position
+        for position, client_id in enumerate(plan.table["Code client"].astype(str))
+        if client_id in plan.required_client_ids
+    ]
+    retained_positions = sorted(set(selected_positions).union(required_positions))
+    selection_changed = set(retained_positions) != set(range(plan.visit_count))
+    if required_positions:
+        st.caption("Les rendez-vous prévus sont obligatoires et restent inclus dans le recalcul.")
     if not retained_positions:
         st.warning("Conservez au moins une entreprise pour recalculer la tournée.")
     if st.button(
@@ -609,157 +628,189 @@ if st.session_state.get("source_signature") != source_signature:
 controls_column, map_column = st.columns([0.36, 0.64], gap="large")
 with controls_column:
     st.subheader("Préparer la tournée")
-    active_salesperson = st.selectbox("Commercial", salespeople)
-    assigned_clients = clients[clients["salesperson"].astype(str) == active_salesperson].copy()
-    st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
 
-    selection_identifier = hashlib.sha1(
-        f"{source_signature}|{active_salesperson}".encode()
-    ).hexdigest()[:12]
-    selection_default_key = f"selection_default_{selection_identifier}"
-    selection_version_key = f"selection_version_{selection_identifier}"
-    st.session_state.setdefault(selection_default_key, True)
-    st.session_state.setdefault(selection_version_key, 0)
-    select_column, deselect_column = st.columns(2)
-    if select_column.button(
-        "Tout sélectionner",
-        key=f"select_all_{selection_identifier}",
-        use_container_width=True,
-    ):
-        st.session_state[selection_default_key] = True
-        st.session_state[selection_version_key] += 1
-        st.rerun()
-    if deselect_column.button(
-        "Tout désélectionner",
-        key=f"deselect_all_{selection_identifier}",
-        use_container_width=True,
-    ):
-        st.session_state[selection_default_key] = False
-        st.session_state[selection_version_key] += 1
-        st.rerun()
+    with st.container(border=True):
+        st.markdown(
+            '<div class="opti-step-title opti-step-prospects">1. Choisir les visites</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Obligatoire · sélectionnez au moins un prospect ou un rendez-vous prévu.")
+        active_salesperson = st.selectbox("Commercial", salespeople)
+        assigned_clients = clients[clients["salesperson"].astype(str) == active_salesperson].copy()
+        st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
 
-    selection_source = assigned_clients.reset_index(drop=True)
-    selection_table = pd.DataFrame(
-        {
-            "Sélectionner": st.session_state[selection_default_key],
-            "Entreprise": selection_source["client_name"].astype(str),
-            "Ville": selection_source["city"].fillna("").astype(str),
-            "Adresse": selection_source["full_address"].fillna("").astype(str),
-        }
-    )
-    edited_selection = st.data_editor(
-        selection_table,
-        key=(f"company_selection_{selection_identifier}_{st.session_state[selection_version_key]}"),
-        hide_index=True,
-        use_container_width=True,
-        height=min(300, max(145, 38 + 35 * len(selection_table))),
-        disabled=["Entreprise", "Ville", "Adresse"],
-        column_config={
-            "Sélectionner": st.column_config.CheckboxColumn(
-                "Visiter", required=True, width="small"
-            ),
-            "Entreprise": st.column_config.TextColumn("Entreprise", width="medium"),
-            "Ville": st.column_config.TextColumn("Ville", width="small"),
-            "Adresse": st.column_config.TextColumn("Adresse", width="large"),
-        },
-    )
-    selected_mask = edited_selection["Sélectionner"].fillna(False).astype(bool).to_numpy()
-    selected_clients = selection_source.loc[selected_mask].copy()
-    st.caption(f"{len(selected_clients)} entreprises sélectionnées")
+        selection_identifier = hashlib.sha1(
+            f"{source_signature}|{active_salesperson}".encode()
+        ).hexdigest()[:12]
+        selection_default_key = f"selection_default_{selection_identifier}"
+        selection_version_key = f"selection_version_{selection_identifier}"
+        st.session_state.setdefault(selection_default_key, True)
+        st.session_state.setdefault(selection_version_key, 0)
+        select_column, deselect_column = st.columns(2)
+        if select_column.button(
+            "Tout sélectionner",
+            key=f"select_all_{selection_identifier}",
+            use_container_width=True,
+        ):
+            st.session_state[selection_default_key] = True
+            st.session_state[selection_version_key] += 1
+            st.rerun()
+        if deselect_column.button(
+            "Tout désélectionner",
+            key=f"deselect_all_{selection_identifier}",
+            use_container_width=True,
+        ):
+            st.session_state[selection_default_key] = False
+            st.session_state[selection_version_key] += 1
+            st.rerun()
 
-    agency_options = _agency_choices(assigned_clients)
-    start_mode = st.radio(
-        "Point de départ",
-        ["Ma position", "Adresse personnalisée", "Client existant", "Agence"],
-        horizontal=True,
-    )
-    location_value = None
-    start_address = ""
-    appointment_id: str | None = None
-    selected_agency_name: str | None = None
-    selected_agency_address: str | None = None
-    if start_mode == "Ma position":
-        location_value = browser_location(key="browser_geolocation", default=None)
-        if location_value:
-            st.success(
-                f"Position : {location_value['latitude']:.5f}, {location_value['longitude']:.5f}",
-                icon="📍",
-            )
-    elif start_mode == "Adresse personnalisée":
-        start_address = _address_field("start", "Adresse de départ")
-    elif start_mode == "Client existant":
-        appointment_options = assigned_clients.copy()
+        selection_source = assigned_clients.reset_index(drop=True)
+        selection_table = pd.DataFrame(
+            {
+                "Sélectionner": st.session_state[selection_default_key],
+                "Entreprise": selection_source["client_name"].astype(str),
+                "Ville": selection_source["city"].fillna("").astype(str),
+                "Adresse": selection_source["full_address"].fillna("").astype(str),
+            }
+        )
+        edited_selection = st.data_editor(
+            selection_table,
+            key=(f"company_selection_{selection_identifier}_{st.session_state[selection_version_key]}"),
+            hide_index=True,
+            use_container_width=True,
+            height=min(300, max(145, 38 + 35 * len(selection_table))),
+            disabled=["Entreprise", "Ville", "Adresse"],
+            column_config={
+                "Sélectionner": st.column_config.CheckboxColumn(
+                    "Visiter", required=True, width="small"
+                ),
+                "Entreprise": st.column_config.TextColumn("Entreprise", width="medium"),
+                "Ville": st.column_config.TextColumn("Ville", width="small"),
+                "Adresse": st.column_config.TextColumn("Adresse", width="large"),
+            },
+        )
+        selected_mask = edited_selection["Sélectionner"].fillna(False).astype(bool).to_numpy()
+        selected_clients = selection_source.loc[selected_mask].copy()
+
+        appointment_options = assigned_clients.reset_index(drop=True).copy()
         appointment_options["display"] = (
             appointment_options["client_name"].astype(str)
             + " — "
             + appointment_options["city"].fillna("").astype(str)
         )
-        selected_appointment = st.selectbox(
-            "Client du rendez-vous",
-            appointment_options.index,
+        selected_planned_indices = st.multiselect(
+            "Rendez-vous déjà planifiés (facultatif)",
+            appointment_options.index.tolist(),
             format_func=lambda index: appointment_options.at[index, "display"],
+            key=f"planned_appointments_{selection_identifier}",
+            help="Ils sont ajoutés à la tournée, même s'ils ne sont pas cochés ci-dessus, et restent obligatoires lors d'un recalcul.",
         )
-        appointment_id = str(appointment_options.at[selected_appointment, "client_id"])
-    else:
-        if agency_options.empty:
-            st.warning(
-                "Aucune agence avec une adresse exploitable n'est renseignée pour ce commercial."
+        planned_appointment_ids = list(
+            dict.fromkeys(
+                str(appointment_options.at[index, "client_id"])
+                for index in selected_planned_indices
             )
+        )
+        planned_clients = appointment_options.loc[selected_planned_indices].drop(
+            columns=["display"], errors="ignore"
+        ).drop_duplicates(subset=["client_id"], keep="first")
+        clients_for_route = pd.concat(
+            [selected_clients, planned_clients], ignore_index=True
+        ).drop_duplicates(subset=["client_id"], keep="first")
+        st.caption(
+            f"{len(selected_clients)} prospects sélectionnés · "
+            f"{len(planned_appointment_ids)} rendez-vous prévu(s)"
+        )
+
+        minimum_visits = max(1, len(planned_appointment_ids))
+        if minimum_visits > route_configuration.max_visits:
+            st.error(
+                f"{len(planned_appointment_ids)} rendez-vous prévus dépassent le maximum autorisé de {route_configuration.max_visits} visites."
+            )
+            requested_visits = route_configuration.max_visits
         else:
-            selected_agency_index = st.selectbox(
-                "Agence de départ",
-                agency_options.index,
-                index=0,
-                format_func=lambda index: (
-                    f"{agency_options.at[index, 'agency']} — "
-                    f"{agency_options.at[index, 'agency_address']}"
+            requested_visits = st.select_slider(
+                "Nombre total de visites",
+                options=list(range(minimum_visits, route_configuration.max_visits + 1)),
+                value=route_configuration.max_visits,
+                help=(
+                    "Les rendez-vous prévus sont compris dans ce total. Les autres prospects les plus proches "
+                    "du départ sont retenus en priorité."
                 ),
-                help="L'agence de référence du commercial est proposée par défaut.",
-            )
-            selected_agency_name = str(agency_options.at[selected_agency_index, "agency"])
-            selected_agency_address = str(
-                agency_options.at[selected_agency_index, "agency_address"]
             )
 
-    visits_label = (
-        "Nombre de visites complémentaires"
-        if start_mode == "Client existant"
-        else "Nombre de visites"
-    )
-    requested_visits = st.select_slider(
-        visits_label,
-        options=list(range(1, route_configuration.max_visits + 1)),
-        value=route_configuration.max_visits,
-        help=(
-            "La valeur est limitée par le maximum défini par l'administrateur. "
-            "Les entreprises sélectionnées les plus proches du départ sont retenues en priorité."
-        ),
-    )
+    with st.container(border=True):
+        st.markdown(
+            '<div class="opti-step-title opti-step-start">2. Choisir le point de départ</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Obligatoire · choisissez votre position ou un client existant.")
+        start_mode = st.radio(
+            "Point de départ",
+            ["Ma position", "Client existant"],
+            index=1,
+            horizontal=True,
+        )
+        location_value = None
+        start_client_id: str | None = None
+        if start_mode == "Ma position":
+            location_value = browser_location(key="browser_geolocation", default=None)
+            if location_value:
+                st.success(
+                    f"Position : {location_value['latitude']:.5f}, {location_value['longitude']:.5f}",
+                    icon="📍",
+                )
+        else:
+            selected_start_index = st.selectbox(
+                "Client de départ",
+                appointment_options.index,
+                format_func=lambda index: appointment_options.at[index, "display"],
+                key=f"start_client_{selection_identifier}",
+            )
+            start_client_id = str(appointment_options.at[selected_start_index, "client_id"])
+            if start_client_id in planned_appointment_ids:
+                st.info("Ce rendez-vous devient le point de départ (ordre 0) et ne sera donc pas une visite distincte.")
 
-    custom_arrival = st.toggle("Utiliser une adresse d'arrivée spécifique", value=False)
-    arrival_address = ""
-    if custom_arrival:
-        arrival_address = _address_field("arrival", "Adresse d'arrivée")
+    with st.container(border=True):
+        st.markdown(
+            '<div class="opti-step-title opti-step-arrival">3. Choisir l’arrivée</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Obligatoire · définissez comment se termine la tournée.")
+        arrival_choices = [
+            "Retour au point de départ",
+            "Terminer à la dernière visite",
+            "Adresse d'arrivée spécifique",
+        ]
+        default_arrival = 0 if route_configuration.return_to_start else 1
+        arrival_mode = st.radio(
+            "Fin de tournée",
+            arrival_choices,
+            index=default_arrival,
+        )
+        custom_arrival = arrival_mode == "Adresse d'arrivée spécifique"
+        return_to_start = arrival_mode == "Retour au point de départ"
+        arrival_address = ""
+        if custom_arrival:
+            arrival_address = _address_field("arrival", "Adresse d'arrivée")
 
     with st.container(border=True):
         st.markdown("##### Contraintes définies par l'administrateur")
         st.caption(
             f"Maximum autorisé : **{route_configuration.max_visits} visite(s)** · "
             f"Rayon : **{route_configuration.radius_km} km** · "
-            + (
-                "**retour au départ**"
-                if route_configuration.return_to_start
-                else "**arrivée à la dernière visite**"
-            )
+            "le choix d'arrivée ci-dessus est appliqué à cette tournée."
         )
-        if custom_arrival:
-            st.caption("L'adresse d'arrivée spécifique remplace le retour au point de départ.")
 
     generate = st.button("Générer ma tournée", type="primary", use_container_width=True)
     if generate:
         try:
-            if selected_clients.empty:
-                raise PlanningError("Sélectionnez au moins une entreprise à visiter.")
+            if clients_for_route.empty:
+                raise PlanningError("Sélectionnez au moins un prospect ou un rendez-vous prévu.")
+            if len(planned_appointment_ids) > route_configuration.max_visits:
+                raise PlanningError(
+                    "Réduisez le nombre de rendez-vous prévus avant de générer la tournée."
+                )
             cache = GeocodeCache(settings.geocode_cache_path)
             progress_bar = st.progress(0, text="Vérification des coordonnées clients…")
 
@@ -769,13 +820,13 @@ with controls_column:
                     text=f"Géocodage {position}/{total} · {client_name}",
                 )
 
-            clients_to_geocode = selected_clients.copy()
-            if start_mode == "Client existant" and appointment_id is not None:
-                appointment_source = assigned_clients[
-                    assigned_clients["client_id"].astype(str) == appointment_id
+            clients_to_geocode = clients_for_route.copy()
+            if start_client_id is not None:
+                start_source = assigned_clients[
+                    assigned_clients["client_id"].astype(str) == start_client_id
                 ]
                 clients_to_geocode = pd.concat(
-                    [clients_to_geocode, appointment_source], ignore_index=True
+                    [clients_to_geocode, start_source], ignore_index=True
                 ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
                 clients_to_geocode,
@@ -784,18 +835,6 @@ with controls_column:
                 progress=update_progress,
             )
             progress_bar.empty()
-
-            visitable_clients = enriched_clients
-            if appointment_id is not None:
-                visitable_clients = visitable_clients[
-                    visitable_clients["client_id"].astype(str) != appointment_id
-                ]
-            if visitable_clients.dropna(subset=["latitude", "longitude"]).empty:
-                error_details = " · ".join(geocode_errors[:3])
-                raise PlanningError(
-                    "Aucune entreprise sélectionnée n'a pu être géocodée."
-                    + (f" {error_details}" if error_details else "")
-                )
 
             if start_mode == "Ma position":
                 if not location_value:
@@ -807,39 +846,32 @@ with controls_column:
                     float(location_value["longitude"]),
                     "Ma position",
                 )
-            elif start_mode == "Adresse personnalisée":
-                start_address = _validated_address(start_address, "de départ")
-                start = _geocode_address(start_address, cache, "de départ")
-            elif start_mode == "Client existant":
-                appointment = enriched_clients[
-                    enriched_clients["client_id"].astype(str) == appointment_id
+            else:
+                start_client = enriched_clients[
+                    enriched_clients["client_id"].astype(str) == start_client_id
                 ]
-                if appointment.empty or appointment[["latitude", "longitude"]].isna().any(
+                if start_client.empty or start_client[["latitude", "longitude"]].isna().any(
                     axis=None
                 ):
-                    raise PlanningError("Le client du rendez-vous n'a pas pu être géocodé.")
-                row = appointment.iloc[0]
+                    raise PlanningError("Le client choisi comme point de départ n'a pas pu être géocodé.")
+                row = start_client.iloc[0]
                 start = StartPoint(
                     float(row["latitude"]),
                     float(row["longitude"]),
-                    f"Rendez-vous · {row['client_name']}",
+                    f"Client · {row['client_name']}",
                     str(row.get("full_address", "")) or None,
                 )
-            else:
-                if not selected_agency_name or not selected_agency_address:
-                    raise PlanningError(
-                        "Aucune agence de départ exploitable n'est disponible pour ce commercial."
-                    )
-                geocoded_agency = _geocode_address(
-                    selected_agency_address,
-                    cache,
-                    "de l'agence",
-                )
-                start = StartPoint(
-                    geocoded_agency.latitude,
-                    geocoded_agency.longitude,
-                    f"Agence · {selected_agency_name}",
-                    geocoded_agency.address,
+
+            visitable_clients = enriched_clients
+            if start_client_id is not None:
+                visitable_clients = visitable_clients[
+                    visitable_clients["client_id"].astype(str) != start_client_id
+                ]
+            if visitable_clients.dropna(subset=["latitude", "longitude"]).empty:
+                error_details = " · ".join(geocode_errors[:3])
+                raise PlanningError(
+                    "Aucun prospect ou rendez-vous prévu à visiter n'a pu être géocodé."
+                    + (f" {error_details}" if error_details else "")
                 )
 
             end: StartPoint | None = None
@@ -853,17 +885,23 @@ with controls_column:
                     geocoded_end.address,
                 )
 
+            effective_required_ids = [
+                client_id
+                for client_id in planned_appointment_ids
+                if client_id != start_client_id
+            ]
             plan = build_route_plan(
-                enriched_clients,
+                visitable_clients,
                 start,
                 radius_km=float(route_configuration.radius_km),
                 max_visits=int(requested_visits),
                 max_duration_hours=None,
-                return_to_start=route_configuration.return_to_start and end is None,
+                return_to_start=return_to_start,
                 objective="time",
                 azure_client=azure_client,
-                excluded_client_id=appointment_id,
+                excluded_client_id=start_client_id,
                 end=end,
+                required_client_ids=effective_required_ids,
             )
             if geocode_errors:
                 plan.warnings.append(

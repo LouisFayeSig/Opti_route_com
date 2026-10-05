@@ -10,11 +10,13 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - séparation des rôles administrateur et utilisateur ;
 - stockage du portefeuille normalisé dans SQLite sans conservation du classeur brut ;
 - choix obligatoire du commercial ;
-- choix utilisateur du nombre de visites, entre 1 et le maximum administrateur ;
+- parcours de préparation en quatre étapes : prospects, départ, arrivée et revue ;
+- choix utilisateur du nombre total de visites, entre le nombre de rendez-vous prévus et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
-- retrait de visites depuis le résultat avec recalcul complet de la tournée ;
-- départ depuis la position du navigateur, une adresse, un client existant ou l'agence du commercial ;
-- adresse d'arrivée spécifique facultative ;
+- ajout d'un ou plusieurs rendez-vous déjà planifiés : ils sont inclus même hors rayon et conservés lors d'un recalcul ;
+- retrait des seules visites facultatives depuis le résultat avec recalcul complet de la tournée ;
+- départ depuis la position du navigateur ou un client existant, affiché à l'ordre 0 ;
+- choix du retour au départ, de la dernière visite ou d'une adresse d'arrivée spécifique ;
 - cache SQLite des adresses géocodées ;
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
