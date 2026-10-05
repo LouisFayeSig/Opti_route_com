@@ -21,7 +21,15 @@ class Settings:
     admin_username: str | None = None
     admin_password: str | None = None
     admin_emails: tuple[str, ...] = ()
+    entra_tenant_id: str | None = None
+    entra_atc_role: str = "OptiRoute.ATC"
+    entra_director_role: str = "OptiRoute.Director"
+    entra_admin_role: str = "OptiRoute.Admin"
+    app_storage_backend: str = "sqlite"
     app_storage_path: Path = Path(".cache/opti_route.sqlite3")
+    azure_storage_account_url: str | None = None
+    azure_storage_container: str = "opti-route-private"
+    azure_storage_connection_string: str | None = None
 
     @property
     def azure_maps_enabled(self) -> bool:
@@ -88,6 +96,39 @@ def load_settings(
     admin_emails = tuple(
         value.strip().casefold() for value in admin_emails_value.split(",") if value.strip()
     )
+    entra_tenant_id = _configured_value("ENTRA_TENANT_ID", secrets)
+    entra_atc_role = _configured_value("ENTRA_ROLE_ATC", secrets, "OptiRoute.ATC")
+    entra_director_role = _configured_value(
+        "ENTRA_ROLE_DIRECTOR", secrets, "OptiRoute.Director"
+    )
+    entra_admin_role = _configured_value("ENTRA_ROLE_ADMIN", secrets, "OptiRoute.Admin")
+    assert entra_atc_role is not None
+    assert entra_director_role is not None
+    assert entra_admin_role is not None
+    configured_entra_roles = (
+        entra_atc_role.strip(),
+        entra_director_role.strip(),
+        entra_admin_role.strip(),
+    )
+    if not all(configured_entra_roles) or len(
+        {value.casefold() for value in configured_entra_roles}
+    ) != len(configured_entra_roles):
+        raise ValueError("Les trois App Roles Entra doivent être non vides et distincts.")
+    storage_backend = (
+        (_configured_value("APP_STORAGE_BACKEND", secrets, "sqlite") or "sqlite")
+        .strip()
+        .casefold()
+    )
+    if storage_backend not in {"sqlite", "azure_blob"}:
+        raise ValueError("APP_STORAGE_BACKEND doit valoir sqlite ou azure_blob.")
+    azure_storage_account_url = _configured_value("AZURE_STORAGE_ACCOUNT_URL", secrets)
+    azure_storage_container = _configured_value(
+        "AZURE_STORAGE_CONTAINER", secrets, "opti-route-private"
+    )
+    azure_storage_connection_string = _configured_value(
+        "AZURE_STORAGE_CONNECTION_STRING", secrets
+    )
+    assert azure_storage_container is not None
     storage_value = _configured_value("APP_STORAGE_PATH", secrets, ".cache/opti_route.sqlite3")
     assert storage_value is not None
     storage_path = Path(storage_value)
@@ -105,5 +146,17 @@ def load_settings(
         admin_username=admin_username.strip() if admin_username else None,
         admin_password=admin_password if admin_password else None,
         admin_emails=admin_emails,
+        entra_tenant_id=entra_tenant_id.strip() if entra_tenant_id else None,
+        entra_atc_role=entra_atc_role.strip(),
+        entra_director_role=entra_director_role.strip(),
+        entra_admin_role=entra_admin_role.strip(),
+        app_storage_backend=storage_backend,
         app_storage_path=storage_path,
+        azure_storage_account_url=(
+            azure_storage_account_url.strip() if azure_storage_account_url else None
+        ),
+        azure_storage_container=azure_storage_container.strip(),
+        azure_storage_connection_string=(
+            azure_storage_connection_string if azure_storage_connection_string else None
+        ),
     )

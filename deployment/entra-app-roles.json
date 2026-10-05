@@ -1,0 +1,29 @@
+[
+  {
+    "allowedMemberTypes": ["User"],
+    "description": "Acces limite au portefeuille rattache au code ATC.",
+    "displayName": "Opti Route - ATC",
+    "id": "6ef6dc2e-bf79-4ec6-bc31-61fcd9b270d1",
+    "isEnabled": true,
+    "origin": "Application",
+    "value": "OptiRoute.ATC"
+  },
+  {
+    "allowedMemberTypes": ["User"],
+    "description": "Acces aux portefeuilles des ATC des agences autorisees.",
+    "displayName": "Opti Route - Directeur",
+    "id": "a44dde39-5612-45ac-bf1b-35299f6a5529",
+    "isEnabled": true,
+    "origin": "Application",
+    "value": "OptiRoute.Director"
+  },
+  {
+    "allowedMemberTypes": ["User"],
+    "description": "Administration du portefeuille, des habilitations et des parametres.",
+    "displayName": "Opti Route - Administrateur",
+    "id": "f6087673-2f96-4d05-9f51-7b1fb1cf65b0",
+    "isEnabled": true,
+    "origin": "Application",
+    "value": "OptiRoute.Admin"
+  }
+]

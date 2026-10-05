@@ -2,6 +2,9 @@
 
 Application Streamlit interne pour préparer et optimiser des tournées commerciales à partir d'un portefeuille clients.
 
+Le guide de déploiement Entra ID, Managed Identity, Blob Storage et Container Apps est disponible
+dans [deployment/AZURE.md](deployment/AZURE.md).
+
 ## Fonctionnalités du MVP
 
 - import administrateur d'un portefeuille aux formats CSV, XLS, XLSX, XLSM ou XLSB ;
@@ -87,14 +90,33 @@ le départ et une éventuelle adresse d'arrivée.
    pour `cookie_secret`.
 5. Définir `AUTH_MODE=entra` dans `.env`, puis redémarrer Streamlit.
 
-Définir également les comptes Entra autorisés à administrer, séparés par des virgules :
+L'autorisation utilise trois **App Roles Entra**, présents dans le claim signé `roles` du jeton :
+
+- `OptiRoute.ATC` : accès au seul code ATC configuré dans l'application ;
+- `OptiRoute.Director` : accès à tous les ATC des agences configurées ;
+- `OptiRoute.Admin` : accès global, import du portefeuille, habilitations et paramètres.
+
+Le fichier [deployment/entra-app-roles.json](deployment/entra-app-roles.json) contient les trois
+définitions prêtes à reporter dans le manifeste de l'inscription d'application. Dans **Enterprise
+applications → Utilisateurs et groupes**, attribuer exactement un de ces rôles à chaque utilisateur
+ou groupe autorisé. Configurer ensuite :
 
 ```dotenv
-ADMIN_EMAILS=admin@entreprise.fr,remplacant@entreprise.fr
+ENTRA_TENANT_ID=identifiant-du-tenant
+ENTRA_ROLE_ATC=OptiRoute.ATC
+ENTRA_ROLE_DIRECTOR=OptiRoute.Director
+ENTRA_ROLE_ADMIN=OptiRoute.Admin
 ```
 
-Une identité Entra absente de cette liste reçoit automatiquement le rôle utilisateur en lecture
-seule. La comparaison des adresses ne tient pas compte des majuscules/minuscules.
+L'application refuse par défaut un jeton sans rôle reconnu, provenant d'un autre tenant ou contenant
+plusieurs rôles Opti Route. Chaque compte doit donc recevoir exactement un rôle.
+Les anciennes listes `ADMIN_EMAILS` ne donnent plus aucun droit en mode Entra.
+
+Après la première connexion de l'administrateur, utiliser l'onglet **Administration →
+Habilitations** pour associer l'Object ID Entra (`oid`) de chaque ATC à son code ATC, et chaque
+directeur à une ou plusieurs agences. Le rôle signé par Entra et le rôle attendu dans l'habilitation
+doivent correspondre ; une incohérence bloque l'accès. L'adresse e-mail n'est pas utilisée comme clé
+d'autorisation, car elle peut changer.
 
 Le fichier `.streamlit/secrets.toml` est ignoré par Git. Seul le fichier d'exemple sans secret est
 versionné. En production, placer ces valeurs dans le gestionnaire de secrets de l'hébergeur.
@@ -133,8 +155,22 @@ streamlit run app.py
 L'import est réservé à l'administrateur. Le portefeuille actif est stocké par défaut dans
 `.cache/opti_route.sqlite3`. Le classeur original n'est pas conservé. Sur un hébergement dont le
 système de fichiers est éphémère, notamment Streamlit Community Cloud, cette base peut disparaître
-au redémarrage ou au redéploiement : pour une conservation durable, définir `APP_STORAGE_PATH` vers
-un volume persistant ou utiliser ultérieurement un stockage Azure dédié.
+au redémarrage ou au redéploiement.
+
+Sur Azure Container Apps, activer le backend Blob persistant :
+
+```dotenv
+APP_STORAGE_BACKEND=azure_blob
+AZURE_STORAGE_ACCOUNT_URL=https://nomducompte.blob.core.windows.net
+AZURE_STORAGE_CONTAINER=opti-route-private
+```
+
+Attribuer à l'identité managée de la Container App le rôle **Storage Blob Data Contributor**, limité
+au conteneur ou au compte utilisé. Ne pas fournir de clé de stockage ni de connection string en
+production. Le conteneur privé doit être créé par l'infrastructure avant le démarrage. Le backend
+enregistre séparément le portefeuille normalisé, les paramètres et chaque habilitation. Activer sur
+le compte Storage le versioning, le soft-delete des blobs et des conteneurs, ainsi qu'une règle de
+cycle de vie. `AZURE_STORAGE_CONNECTION_STRING` est uniquement prévu pour Azurite ou un test local.
 
 Le calcul des routes reste effectué par Azure Maps. Le fond interactif Streamlit utilise PyDeck par défaut afin de ne pas exposer la clé au navigateur et de ne pas dépendre des règles CORS. Le contrôle Web Azure peut être réactivé après configuration de l'origine Streamlit dans Azure Maps :
 
@@ -151,6 +187,7 @@ puis permet à l'administrateur de corriger la correspondance :
 |---|---|
 | Code client | `Code client`, `ID client`, `Compte` |
 | Nom | `Client`, `Raison sociale`, `Nom compte` |
+| Code ATC | `Code ATC`, `Matricule ATC`, `Code commercial` |
 | Commercial | `Commercial`, `Vendeur`, `Responsable commercial` |
 | Agence | `Agence`, `Nom agence`, `Agence de référence` |
 | Adresse agence | `Adresse agence`, `Adresse du site` |
@@ -161,7 +198,9 @@ puis permet à l'administrateur de corriger la correspondance :
 | Coordonnées | `Latitude` / `Longitude`, `Lat` / `Lon` |
 
 Une colonne d'adresse suffit et le code ainsi que le nom du client peuvent être générés. En revanche,
-le commercial est désormais obligatoire pour permettre le filtrage utilisateur. Les coordonnées
+le commercial est désormais obligatoire pour permettre le filtrage utilisateur. Le code ATC est
+utilisé pour les habilitations ; pour assurer la compatibilité avec les anciens fichiers, le nom du
+commercial est utilisé comme code de repli lorsqu'aucune colonne dédiée n'est fournie. Les coordonnées
 sont facultatives : les lignes qui n'en possèdent pas sont géocodées via Azure Maps et mises en cache
 dans `.cache/geocoding.sqlite3`.
 

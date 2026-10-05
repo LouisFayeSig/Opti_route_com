@@ -14,10 +14,17 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from opti_route.auth import AuthenticatedUser, render_account_controls, require_authentication
+from opti_route.access import AccessDeniedError, authorize_portfolio
+from opti_route.auth import (
+    ROLE_ATC,
+    ROLE_DIRECTOR,
+    AuthenticatedUser,
+    render_account_controls,
+    require_authentication,
+)
 from opti_route.azure_maps import AzureMapsClient, AzureMapsError
 from opti_route.cache import GeocodeCache
-from opti_route.config import load_settings
+from opti_route.config import Settings, load_settings
 from opti_route.data import (
     ALIASES,
     ClientDataError,
@@ -38,11 +45,13 @@ from opti_route.planner import (
     rebuild_route_plan,
 )
 from opti_route.storage import (
-    AppStore,
+    ApplicationStore,
     PortfolioMetadata,
     RouteConfiguration,
     StorageError,
+    UserAccessProfile,
 )
+from opti_route.store_factory import create_app_store
 
 st.set_page_config(
     page_title="Opti Route Com",
@@ -86,6 +95,21 @@ except FileNotFoundError:
     runtime_secrets = {}
 settings = load_settings(PROJECT_ROOT, secrets=runtime_secrets)
 
+
+@st.cache_resource
+def _initialize_app_store(_settings: Settings) -> ApplicationStore:
+    return create_app_store(_settings)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_persistent_app_state(
+    storage_backend: str, _store: ApplicationStore
+) -> tuple[pd.DataFrame | None, PortfolioMetadata | None, RouteConfiguration]:
+    # storage_backend fait partie de la clé de cache ; _store est une ressource non sérialisable.
+    del storage_backend
+    clients, metadata = _store.load_clients()
+    return clients, metadata, _store.load_route_configuration()
+
 browser_location = components.declare_component(
     "opti_route_browser_location", path=str(SRC_ROOT / "opti_route" / "browser_location")
 )
@@ -93,6 +117,7 @@ browser_location = components.declare_component(
 FIELD_LABELS = {
     "client_id": "Code client",
     "client_name": "Nom du client",
+    "salesperson_code": "Code ATC",
     "salesperson": "Commercial",
     "agency": "Agence",
     "agency_address": "Adresse agence",
@@ -108,7 +133,7 @@ FIELD_LABELS = {
 
 
 def _admin_import_panel(
-    store: AppStore,
+    store: ApplicationStore,
     user: AuthenticatedUser,
     current_clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
@@ -225,12 +250,15 @@ def _admin_import_panel(
         except StorageError as exc:
             st.error(str(exc))
         else:
+            _load_persistent_app_state.clear()
             st.session_state.pop("route_plan", None)
             st.success("Le portefeuille sécurisé a été remplacé.")
             st.rerun()
 
 
-def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) -> None:
+def _admin_settings_panel(
+    store: ApplicationStore, configuration: RouteConfiguration
+) -> None:
     st.caption(
         "Ces contraintes sont communes à tous les utilisateurs et modifiables ici uniquement."
     )
@@ -269,9 +297,160 @@ def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) ->
         except StorageError as exc:
             st.error(str(exc))
         else:
+            _load_persistent_app_state.clear()
             st.session_state.pop("route_plan", None)
             st.success("Les paramètres ont été enregistrés.")
             st.rerun()
+
+
+def _admin_access_panel(
+    store: ApplicationStore,
+    user: AuthenticatedUser,
+    clients: pd.DataFrame | None,
+) -> None:
+    st.caption(
+        "Les rôles sont attribués dans Microsoft Entra ID. Ce panneau définit uniquement "
+        "le périmètre de données des ATC et des directeurs."
+    )
+    profiles = store.list_access_profiles()
+    if profiles:
+        profile_table = pd.DataFrame(
+            [
+                {
+                    "Collaborateur": profile.display_name,
+                    "Object ID Entra": profile.principal_id,
+                    "Rôle attendu": "ATC" if profile.role == ROLE_ATC else "Directeur",
+                    "Code ATC": profile.atc_code or "",
+                    "Agences": ", ".join(profile.agencies),
+                    "Modifié le": profile.updated_at.replace("T", " "),
+                }
+                for profile in profiles
+            ]
+        )
+        st.dataframe(profile_table, hide_index=True, use_container_width=True)
+    else:
+        st.info("Aucune habilitation ATC ou directeur n'est encore configurée.")
+
+    st.markdown("##### Ajouter ou mettre à jour une habilitation")
+    st.caption(
+        "Utilisez le claim `oid` du compte Entra. Un rôle administrateur n'a pas besoin "
+        "d'habilitation, car son périmètre est global."
+    )
+    principal_id = st.text_input(
+        "Object ID Entra",
+        key="access_principal_id",
+        placeholder="00000000-0000-0000-0000-000000000000",
+    )
+    display_name = st.text_input(
+        "Nom affiché",
+        key="access_display_name",
+        placeholder="Prénom NOM",
+    )
+    role_label = st.radio(
+        "Rôle attendu",
+        ["ATC", "Directeur"],
+        horizontal=True,
+        key="access_role",
+    )
+
+    atc_rows = pd.DataFrame(columns=["salesperson_code", "salesperson"])
+    agencies: list[str] = []
+    if clients is not None:
+        atc_rows = (
+            clients[["salesperson_code", "salesperson"]]
+            .fillna("")
+            .astype(str)
+            .drop_duplicates()
+            .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+        )
+        agencies = sorted(
+            {
+                value.strip()
+                for value in clients["agency"].fillna("").astype(str)
+                if value.strip()
+            },
+            key=str.casefold,
+        )
+
+    selected_atc_code: str | None = None
+    selected_agencies: tuple[str, ...] = ()
+    if role_label == "ATC":
+        atc_options = atc_rows.index.tolist()
+        if atc_options:
+            selected_atc_index = st.selectbox(
+                "Code ATC et commercial",
+                atc_options,
+                format_func=lambda index: (
+                    f"{atc_rows.at[index, 'salesperson']} · "
+                    f"{atc_rows.at[index, 'salesperson_code']}"
+                ),
+                key="access_atc_scope",
+            )
+            selected_atc_code = str(atc_rows.at[selected_atc_index, "salesperson_code"])
+        else:
+            st.warning("Importez d'abord un portefeuille contenant des codes ATC.")
+    else:
+        selected_agencies = tuple(
+            st.multiselect(
+                "Agences autorisées",
+                agencies,
+                key="access_agency_scope",
+            )
+        )
+        if not agencies:
+            st.warning("Importez d'abord un portefeuille contenant des agences.")
+
+    if st.button(
+        "Enregistrer l'habilitation",
+        type="primary",
+        disabled=not principal_id.strip(),
+        key="save_access_profile",
+    ):
+        try:
+            store.save_access_profile(
+                UserAccessProfile(
+                    principal_id=principal_id,
+                    display_name=display_name,
+                    role=ROLE_ATC if role_label == "ATC" else ROLE_DIRECTOR,
+                    atc_code=selected_atc_code,
+                    agencies=selected_agencies,
+                ),
+                updated_by=user.display_name,
+            )
+        except StorageError as exc:
+            st.error(str(exc))
+        else:
+            st.success("L'habilitation a été enregistrée.")
+            st.rerun()
+
+    if profiles:
+        with st.expander("Révoquer une habilitation"):
+            profile_by_id = {profile.principal_id: profile for profile in profiles}
+            revoked_id = st.selectbox(
+                "Compte",
+                list(profile_by_id),
+                format_func=lambda value: (
+                    f"{profile_by_id[value].display_name} · {value}"
+                ),
+                key="revoke_access_profile",
+            )
+            confirmed = st.checkbox(
+                "Je confirme la révocation de cet accès aux données.",
+                key="confirm_revoke_access_profile",
+            )
+            if st.button(
+                "Révoquer l'habilitation",
+                disabled=not confirmed,
+                key="delete_access_profile",
+            ):
+                try:
+                    deleted = store.delete_access_profile(revoked_id)
+                except StorageError as exc:
+                    st.error(str(exc))
+                else:
+                    if deleted:
+                        st.success("L'habilitation a été révoquée.")
+                    st.rerun()
 
 
 def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> None:
@@ -321,7 +500,7 @@ def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> 
 
 
 def _render_admin_panel(
-    store: AppStore,
+    store: ApplicationStore,
     user: AuthenticatedUser,
     clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
@@ -329,11 +508,13 @@ def _render_admin_panel(
     azure_client: AzureMapsClient | None,
 ) -> None:
     with st.expander("⚙️ Administration", expanded=clients is None):
-        portfolio_tab, settings_tab, diagnostic_tab = st.tabs(
-            ["Portefeuille clients", "Contraintes", "Diagnostic Azure"]
+        portfolio_tab, access_tab, settings_tab, diagnostic_tab = st.tabs(
+            ["Portefeuille clients", "Habilitations", "Contraintes", "Diagnostic Azure"]
         )
         with portfolio_tab:
             _admin_import_panel(store, user, clients, metadata)
+        with access_tab:
+            _admin_access_panel(store, user, clients)
         with settings_tab:
             _admin_settings_panel(store, configuration)
         with diagnostic_tab:
@@ -581,9 +762,11 @@ with account_column:
     render_account_controls(authenticated_user)
 
 try:
-    store = AppStore(settings.app_storage_path)
-    clients, portfolio_metadata = store.load_clients()
-    route_configuration = store.load_route_configuration()
+    store = _initialize_app_store(settings)
+    clients, portfolio_metadata, route_configuration = _load_persistent_app_state(
+        settings.app_storage_backend,
+        store,
+    )
 except StorageError as exc:
     st.error(str(exc))
     st.stop()
@@ -605,12 +788,37 @@ if clients is None or portfolio_metadata is None:
         st.info("Aucun portefeuille clients n'est disponible. Contactez l'administrateur.")
     st.stop()
 
-salespeople = sorted(
-    value
-    for value in clients["salesperson"].dropna().astype(str).unique()
-    if value.strip() and value != "Tous"
+try:
+    access_profile = (
+        None
+        if authenticated_user.is_admin
+        else store.load_access_profile(authenticated_user.principal_id)
+    )
+    authorized_portfolio = authorize_portfolio(clients, authenticated_user, access_profile)
+except (AccessDeniedError, StorageError) as exc:
+    st.error(str(exc))
+    if authenticated_user.principal_id:
+        st.caption(f"Identifiant du compte : `{authenticated_user.principal_id}`")
+    st.stop()
+
+scoped_clients = authorized_portfolio.clients
+salesperson_rows = (
+    scoped_clients[["salesperson_code", "salesperson"]]
+    .fillna("")
+    .astype(str)
+    .drop_duplicates(subset=["salesperson_code"], keep="first")
 )
-if not salespeople:
+salesperson_rows = salesperson_rows[
+    salesperson_rows["salesperson_code"].str.strip().ne("")
+    & salesperson_rows["salesperson"].str.strip().ne("")
+    & salesperson_rows["salesperson"].ne("Tous")
+].sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+salesperson_codes = salesperson_rows["salesperson_code"].tolist()
+salesperson_labels = {
+    row.salesperson_code: f"{row.salesperson} · {row.salesperson_code}"
+    for row in salesperson_rows.itertuples(index=False)
+}
+if not salesperson_codes:
     st.error(
         "Le portefeuille actif ne contient aucun commercial exploitable. "
         "L'administrateur doit importer un fichier corrigé."
@@ -619,7 +827,8 @@ if not salespeople:
 
 source_signature = (
     f"{portfolio_metadata.digest}:{route_configuration.radius_km}:"
-    f"{route_configuration.max_visits}:{route_configuration.return_to_start}"
+    f"{route_configuration.max_visits}:{route_configuration.return_to_start}:"
+    f"{authenticated_user.principal_id}:{authorized_portfolio.signature}"
 )
 if st.session_state.get("source_signature") != source_signature:
     st.session_state["source_signature"] = source_signature
@@ -635,12 +844,24 @@ with controls_column:
             unsafe_allow_html=True,
         )
         st.caption("Obligatoire · sélectionnez au moins un prospect ou un rendez-vous prévu.")
-        active_salesperson = st.selectbox("Commercial", salespeople)
-        assigned_clients = clients[clients["salesperson"].astype(str) == active_salesperson].copy()
+        active_salesperson_code = st.selectbox(
+            "Commercial",
+            salesperson_codes,
+            format_func=lambda code: salesperson_labels.get(code, code),
+            disabled=authenticated_user.is_atc,
+            help=(
+                "Votre portefeuille est imposé par votre habilitation."
+                if authenticated_user.is_atc
+                else "Vous pouvez préparer une tournée pour un commercial de votre périmètre."
+            ),
+        )
+        assigned_clients = scoped_clients[
+            scoped_clients["salesperson_code"].astype(str) == active_salesperson_code
+        ].copy()
         st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
 
         selection_identifier = hashlib.sha1(
-            f"{source_signature}|{active_salesperson}".encode()
+            f"{source_signature}|{active_salesperson_code}".encode()
         ).hexdigest()[:12]
         selection_default_key = f"selection_default_{selection_identifier}"
         selection_version_key = f"selection_version_{selection_identifier}"

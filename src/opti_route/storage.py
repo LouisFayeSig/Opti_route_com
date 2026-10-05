@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 import pandas as pd
 
@@ -40,9 +41,47 @@ class PortfolioMetadata:
     digest: str
 
 
+@dataclass(frozen=True)
+class UserAccessProfile:
+    principal_id: str
+    display_name: str
+    role: str
+    atc_code: str | None = None
+    agencies: tuple[str, ...] = ()
+    updated_at: str = ""
+    updated_by: str = ""
+
+    def validated(self) -> UserAccessProfile:
+        principal_id = self.principal_id.strip().casefold()
+        display_name = self.display_name.strip()
+        role = self.role.strip().casefold()
+        atc_code = (self.atc_code or "").strip() or None
+        agencies = tuple(
+            dict.fromkeys(value.strip() for value in self.agencies if value.strip())
+        )
+        if not principal_id or len(principal_id) > 255:
+            raise StorageError("L'identifiant Entra est obligatoire et limite a 255 caracteres.")
+        if role not in {"atc", "director"}:
+            raise StorageError("Une habilitation doit avoir le role ATC ou directeur.")
+        if role == "atc" and not atc_code:
+            raise StorageError("Un code ATC est obligatoire pour le role ATC.")
+        if role == "director" and not agencies:
+            raise StorageError("Au moins une agence est obligatoire pour le role directeur.")
+        return UserAccessProfile(
+            principal_id=principal_id,
+            display_name=display_name or principal_id,
+            role=role,
+            atc_code=atc_code if role == "atc" else None,
+            agencies=agencies if role == "director" else (),
+            updated_at=self.updated_at,
+            updated_by=self.updated_by,
+        )
+
+
 _CLIENT_COLUMNS = (
     "client_id",
     "client_name",
+    "salesperson_code",
     "salesperson",
     "agency",
     "agency_address",
@@ -56,6 +95,92 @@ _CLIENT_COLUMNS = (
     "longitude",
     "full_address",
 )
+
+
+def serialize_portfolio(
+    clients: pd.DataFrame,
+    *,
+    source_name: str,
+    imported_by: str,
+) -> tuple[str, PortfolioMetadata]:
+    if clients.empty:
+        raise StorageError("Le portefeuille ne contient aucun client.")
+    clients = clients.copy()
+    if "salesperson_code" not in clients.columns and "salesperson" in clients.columns:
+        clients["salesperson_code"] = clients["salesperson"]
+    missing_columns = set(_CLIENT_COLUMNS).difference(clients.columns)
+    if missing_columns:
+        raise StorageError("Le portefeuille normalisé est incomplet.")
+    if len(clients) > 70_000:
+        raise StorageError("Le portefeuille dépasse la limite de 70 000 lignes.")
+
+    salespeople = clients["salesperson"].fillna("").astype(str).str.strip()
+    invalid_salespeople = salespeople.eq("") | salespeople.eq("Tous")
+    if invalid_salespeople.any():
+        raise StorageError(
+            "Chaque client doit être affecté à un commercial avant l'enregistrement."
+        )
+    salesperson_codes = clients["salesperson_code"].fillna("").astype(str).str.strip()
+    if salesperson_codes.eq("").any():
+        raise StorageError("Chaque client doit être affecté à un code ATC.")
+
+    normalized = clients.loc[:, _CLIENT_COLUMNS].copy()
+    payload = normalized.to_json(orient="records", force_ascii=False)
+    metadata = PortfolioMetadata(
+        source_name=Path(source_name.replace("\\", "/")).name[:255] or "portefeuille",
+        imported_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        imported_by=imported_by[:255],
+        row_count=len(normalized),
+        digest=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+    )
+    return payload, metadata
+
+
+def deserialize_portfolio(payload: str, metadata: PortfolioMetadata) -> pd.DataFrame:
+    if hashlib.sha256(payload.encode("utf-8")).hexdigest() != metadata.digest:
+        raise StorageError("Le portefeuille stocké est incohérent ou corrompu.")
+    try:
+        records = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise StorageError("Le portefeuille stocké n'est pas lisible.") from exc
+    clients = pd.DataFrame.from_records(records, columns=_CLIENT_COLUMNS)
+    clients["salesperson_code"] = (
+        clients["salesperson_code"]
+        .fillna(clients["salesperson"])
+        .astype("string")
+        .str.strip()
+    )
+    clients["latitude"] = pd.to_numeric(clients["latitude"], errors="coerce")
+    clients["longitude"] = pd.to_numeric(clients["longitude"], errors="coerce")
+    if len(clients) != metadata.row_count:
+        raise StorageError("Le nombre de lignes du portefeuille stocké est incohérent.")
+    return clients
+
+
+class ApplicationStore(Protocol):
+    def save_clients(
+        self,
+        clients: pd.DataFrame,
+        *,
+        source_name: str,
+        imported_by: str,
+    ) -> PortfolioMetadata: ...
+
+    def load_clients(self) -> tuple[pd.DataFrame | None, PortfolioMetadata | None]: ...
+
+    def load_route_configuration(self) -> RouteConfiguration: ...
+
+    def save_route_configuration(self, configuration: RouteConfiguration) -> None: ...
+
+    def list_access_profiles(self) -> list[UserAccessProfile]: ...
+
+    def load_access_profile(self, principal_id: str) -> UserAccessProfile | None: ...
+
+    def save_access_profile(
+        self, profile: UserAccessProfile, *, updated_by: str
+    ) -> UserAccessProfile: ...
+
+    def delete_access_profile(self, principal_id: str) -> bool: ...
 
 
 class AppStore:
@@ -121,6 +246,19 @@ class AppStore:
                     )
                     """
                 )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS access_profiles (
+                        principal_id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        role TEXT NOT NULL CHECK (role IN ('atc', 'director')),
+                        atc_code TEXT,
+                        agencies TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        updated_by TEXT NOT NULL
+                    )
+                    """
+                )
         except sqlite3.Error as exc:
             raise StorageError(f"Initialisation du stockage impossible : {exc}") from exc
         self._set_private_permissions(self.path, 0o600)
@@ -132,31 +270,10 @@ class AppStore:
         source_name: str,
         imported_by: str,
     ) -> PortfolioMetadata:
-        if clients.empty:
-            raise StorageError("Le portefeuille ne contient aucun client.")
-        missing_columns = set(_CLIENT_COLUMNS).difference(clients.columns)
-        if missing_columns:
-            raise StorageError("Le portefeuille normalisé est incomplet.")
-        if len(clients) > 70_000:
-            raise StorageError("Le portefeuille dépasse la limite de 70 000 lignes.")
-
-        salespeople = clients["salesperson"].fillna("").astype(str).str.strip()
-        invalid_salespeople = salespeople.eq("") | salespeople.eq("Tous")
-        if invalid_salespeople.any():
-            raise StorageError(
-                "Chaque client doit être affecté à un commercial avant l'enregistrement."
-            )
-
-        normalized = clients.loc[:, _CLIENT_COLUMNS].copy()
-        payload = normalized.to_json(orient="records", force_ascii=False)
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        safe_source_name = Path(source_name.replace("\\", "/")).name
-        metadata = PortfolioMetadata(
-            source_name=safe_source_name[:255] or "portefeuille",
-            imported_at=datetime.now(UTC).isoformat(timespec="seconds"),
-            imported_by=imported_by[:255],
-            row_count=len(normalized),
-            digest=digest,
+        payload, metadata = serialize_portfolio(
+            clients,
+            source_name=source_name,
+            imported_by=imported_by,
         )
         try:
             with self._connection() as connection:
@@ -201,18 +318,8 @@ class AppStore:
             return None, None
 
         payload, source_name, imported_at, imported_by, row_count, digest = row
-        if (
-            not isinstance(payload, str)
-            or hashlib.sha256(payload.encode("utf-8")).hexdigest() != digest
-        ):
+        if not isinstance(payload, str):
             raise StorageError("Le portefeuille stocké est incohérent ou corrompu.")
-        try:
-            records = json.loads(payload)
-        except json.JSONDecodeError as exc:
-            raise StorageError("Le portefeuille stocké n'est pas lisible.") from exc
-        clients = pd.DataFrame.from_records(records, columns=_CLIENT_COLUMNS)
-        clients["latitude"] = pd.to_numeric(clients["latitude"], errors="coerce")
-        clients["longitude"] = pd.to_numeric(clients["longitude"], errors="coerce")
         metadata = PortfolioMetadata(
             source_name=str(source_name),
             imported_at=str(imported_at),
@@ -220,9 +327,7 @@ class AppStore:
             row_count=int(row_count),
             digest=str(digest),
         )
-        if len(clients) != metadata.row_count:
-            raise StorageError("Le nombre de lignes du portefeuille stocké est incohérent.")
-        return clients, metadata
+        return deserialize_portfolio(payload, metadata), metadata
 
     def load_route_configuration(self) -> RouteConfiguration:
         try:
@@ -254,3 +359,115 @@ class AppStore:
                 )
         except sqlite3.Error as exc:
             raise StorageError(f"Enregistrement des paramètres impossible : {exc}") from exc
+
+    def list_access_profiles(self) -> list[UserAccessProfile]:
+        try:
+            with self._connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT principal_id, display_name, role, atc_code, agencies,
+                           updated_at, updated_by
+                    FROM access_profiles
+                    ORDER BY display_name COLLATE NOCASE, principal_id
+                    """
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise StorageError(f"Lecture des habilitations impossible : {exc}") from exc
+        profiles: list[UserAccessProfile] = []
+        for row in rows:
+            profiles.append(self._access_profile_from_row(row))
+        return profiles
+
+    def load_access_profile(self, principal_id: str) -> UserAccessProfile | None:
+        normalized_id = principal_id.strip()
+        if not normalized_id:
+            return None
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT principal_id, display_name, role, atc_code, agencies,
+                           updated_at, updated_by
+                    FROM access_profiles WHERE principal_id = ? COLLATE NOCASE
+                    """,
+                    (normalized_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(f"Lecture de l'habilitation impossible : {exc}") from exc
+        return self._access_profile_from_row(row) if row is not None else None
+
+    @staticmethod
+    def _access_profile_from_row(row: tuple[object, ...]) -> UserAccessProfile:
+        try:
+            parsed_agencies = json.loads(str(row[4]))
+            if not isinstance(parsed_agencies, list):
+                raise TypeError
+            agencies = tuple(str(value) for value in parsed_agencies)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StorageError("Une habilitation stockée est corrompue.") from exc
+        return UserAccessProfile(
+            principal_id=str(row[0]),
+            display_name=str(row[1]),
+            role=str(row[2]),
+            atc_code=str(row[3]) if row[3] is not None else None,
+            agencies=agencies,
+            updated_at=str(row[5]),
+            updated_by=str(row[6]),
+        ).validated()
+
+    def save_access_profile(
+        self, profile: UserAccessProfile, *, updated_by: str
+    ) -> UserAccessProfile:
+        profile = profile.validated()
+        stored_profile = UserAccessProfile(
+            principal_id=profile.principal_id,
+            display_name=profile.display_name,
+            role=profile.role,
+            atc_code=profile.atc_code,
+            agencies=profile.agencies,
+            updated_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            updated_by=updated_by.strip()[:255] or "Administrateur",
+        )
+        try:
+            with self._connection() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO access_profiles (
+                        principal_id, display_name, role, atc_code, agencies,
+                        updated_at, updated_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(principal_id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        role = excluded.role,
+                        atc_code = excluded.atc_code,
+                        agencies = excluded.agencies,
+                        updated_at = excluded.updated_at,
+                        updated_by = excluded.updated_by
+                    """,
+                    (
+                        stored_profile.principal_id,
+                        stored_profile.display_name,
+                        stored_profile.role,
+                        stored_profile.atc_code,
+                        json.dumps(stored_profile.agencies, ensure_ascii=False),
+                        stored_profile.updated_at,
+                        stored_profile.updated_by,
+                    ),
+                )
+        except sqlite3.Error as exc:
+            raise StorageError(f"Enregistrement de l'habilitation impossible : {exc}") from exc
+        return stored_profile
+
+    def delete_access_profile(self, principal_id: str) -> bool:
+        normalized_id = principal_id.strip()
+        if not normalized_id:
+            raise StorageError("L'identifiant Entra est obligatoire.")
+        try:
+            with self._connection() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM access_profiles WHERE principal_id = ? COLLATE NOCASE",
+                    (normalized_id,),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as exc:
+            raise StorageError(f"Suppression de l'habilitation impossible : {exc}") from exc
