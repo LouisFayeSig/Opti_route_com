@@ -65,8 +65,12 @@ def test_password_mode_accepts_configured_credentials(monkeypatch) -> None:
     assert len(app.file_uploader) == 0
 
 
-def test_user_route_form_guides_from_a_client_start(monkeypatch) -> None:
-    monkeypatch.setenv("AUTH_MODE", "none")
+def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
+    monkeypatch.setenv("AUTH_MODE", "password")
+    monkeypatch.setenv("AUTH_USERNAME", "collaborateur-test")
+    monkeypatch.setenv("AUTH_PASSWORD", "mot-de-passe-test-long")
+    monkeypatch.setenv("ADMIN_USERNAME", "administrateur-test")
+    monkeypatch.setenv("ADMIN_PASSWORD", "mot-de-passe-admin-test-long")
     storage_path = Path(".cache") / f"app-flow-test-{uuid4().hex}.sqlite3"
     store = AppStore(storage_path)
     store.save_clients(_portfolio(), source_name="portfolio.xlsx", imported_by="Test")
@@ -75,19 +79,21 @@ def test_user_route_form_guides_from_a_client_start(monkeypatch) -> None:
 
     try:
         app = AppTest.from_file(str(app_path), default_timeout=30).run()
+        app.text_input[0].input("administrateur-test")
+        app.text_input[1].input("mot-de-passe-admin-test-long")
+        app.button[0].click().run()
         labels = [selectbox.label for selectbox in app.selectbox]
 
         assert not app.exception
-        assert app.subheader[0].value == "Sélectionner votre portefeuille"
-        assert labels == [
+        assert app.subheader[0].value == "Préparer la tournée"
+        assert labels[-2:] == [
             "Commercial",
             "Client de départ",
         ]
         assert [multiselect.label for multiselect in app.multiselect] == [
-            "Autre rendez-vous déjà planifié (facultatif)"
+            "Rendez-vous déjà planifiés (facultatif)"
         ]
-        assert len(app.radio) == 0
-        assert len(app.toggle) == 0
+        assert [radio.label for radio in app.radio][-2:] == ["Point de départ", "Fin de tournée"]
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)

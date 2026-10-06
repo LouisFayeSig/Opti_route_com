@@ -6,7 +6,12 @@ from uuid import uuid4
 import pandas as pd
 import pytest
 
-from opti_route.storage import AppStore, RouteConfiguration, StorageError
+from opti_route.storage import (
+    AppStore,
+    RouteConfiguration,
+    StorageError,
+    UserAccessProfile,
+)
 
 
 def _clients(salesperson: str = "Morgan") -> pd.DataFrame:
@@ -77,3 +82,39 @@ def test_admin_route_configuration_is_persistent_and_limited(store_path: Path) -
     assert store.load_route_configuration() == configuration
     with pytest.raises(StorageError, match="compris entre 1 et 10"):
         store.save_route_configuration(RouteConfiguration(max_visits=11))
+
+
+def test_access_profiles_are_persistent_and_revocable(store_path: Path) -> None:
+    store = AppStore(store_path)
+    profile = store.save_access_profile(
+        UserAccessProfile(
+            principal_id="OID-DIRECTION",
+            display_name="Direction Caen",
+            role="director",
+            agencies=("Caen", "Bayeux"),
+        ),
+        updated_by="Admin",
+    )
+
+    loaded = store.load_access_profile("oid-direction")
+
+    assert loaded == profile
+    assert loaded is not None
+    assert loaded.agencies == ("Caen", "Bayeux")
+    assert store.list_access_profiles() == [profile]
+    assert store.delete_access_profile("OID-DIRECTION")
+    assert store.load_access_profile("oid-direction") is None
+
+
+def test_access_profile_requires_a_scope_matching_its_role(store_path: Path) -> None:
+    store = AppStore(store_path)
+
+    with pytest.raises(StorageError, match="code ATC"):
+        store.save_access_profile(
+            UserAccessProfile("oid-atc", "ATC", "atc"), updated_by="Admin"
+        )
+    with pytest.raises(StorageError, match="agence"):
+        store.save_access_profile(
+            UserAccessProfile("oid-director", "Direction", "director"),
+            updated_by="Admin",
+        )

@@ -7,16 +7,24 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from opti_route.auth import AuthenticatedUser, render_account_controls, require_authentication
-from opti_route.azure_maps import AzureMapsClient
+from opti_route.access import AccessDeniedError, authorize_portfolio
+from opti_route.auth import (
+    ROLE_ATC,
+    ROLE_DIRECTOR,
+    AuthenticatedUser,
+    render_account_controls,
+    require_authentication,
+)
+from opti_route.azure_maps import AzureMapsClient, AzureMapsError
 from opti_route.cache import GeocodeCache
-from opti_route.config import load_settings
+from opti_route.config import Settings, load_settings
 from opti_route.data import (
     ALIASES,
     ClientDataError,
@@ -37,11 +45,13 @@ from opti_route.planner import (
     rebuild_route_plan,
 )
 from opti_route.storage import (
-    AppStore,
+    ApplicationStore,
     PortfolioMetadata,
     RouteConfiguration,
     StorageError,
+    UserAccessProfile,
 )
+from opti_route.store_factory import create_app_store
 
 st.set_page_config(
     page_title="Opti Route Com",
@@ -68,6 +78,12 @@ st.markdown(
         background:linear-gradient(145deg,#f8fbff,#f3f7fa);padding:2rem}
       .opti-empty-icon {font-size:3rem;margin-bottom:.8rem}
       [data-testid="stHorizontalBlock"] {align-items:stretch;}
+      .opti-step-title {padding:.55rem .7rem;border-radius:9px;font-weight:700;margin-bottom:.65rem}
+      .opti-step-prospects {background:#eff6ff;color:#1d4ed8;border-left:4px solid #2563eb}
+      .opti-step-start {background:#ecfdf5;color:#047857;border-left:4px solid #10b981}
+      .opti-step-arrival {background:#fff7ed;color:#c2410c;border-left:4px solid #f97316}
+      .opti-step-review {background:#f5f3ff;color:#6d28d9;border-left:4px solid #8b5cf6}
+      div[data-testid="stVerticalBlockBorderWrapper"] {border-radius:12px;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -79,9 +95,29 @@ except FileNotFoundError:
     runtime_secrets = {}
 settings = load_settings(PROJECT_ROOT, secrets=runtime_secrets)
 
+
+@st.cache_resource
+def _initialize_app_store(_settings: Settings) -> ApplicationStore:
+    return create_app_store(_settings)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_persistent_app_state(
+    storage_backend: str, _store: ApplicationStore
+) -> tuple[pd.DataFrame | None, PortfolioMetadata | None, RouteConfiguration]:
+    # storage_backend fait partie de la clé de cache ; _store est une ressource non sérialisable.
+    del storage_backend
+    clients, metadata = _store.load_clients()
+    return clients, metadata, _store.load_route_configuration()
+
+browser_location = components.declare_component(
+    "opti_route_browser_location", path=str(SRC_ROOT / "opti_route" / "browser_location")
+)
+
 FIELD_LABELS = {
     "client_id": "Code client",
     "client_name": "Nom du client",
+    "salesperson_code": "Code ATC",
     "salesperson": "Commercial",
     "agency": "Agence",
     "agency_address": "Adresse agence",
@@ -97,20 +133,20 @@ FIELD_LABELS = {
 
 
 def _admin_import_panel(
-    store: AppStore,
+    store: ApplicationStore,
     user: AuthenticatedUser,
     current_clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
 ) -> None:
     if current_clients is not None:
-        st.success(f"Portefeuille actif : {len(current_clients)} entreprises.")
+        st.success(f"Portefeuille actif : {len(current_clients)} clients.")
         if metadata is not None:
             st.caption(
                 f"Source : {metadata.source_name} · Importé par {metadata.imported_by} "
                 f"le {metadata.imported_at.replace('T', ' ')}"
             )
     uploaded = st.file_uploader(
-        "Importer et remplacer le portefeuille d'entreprises",
+        "Importer et remplacer le portefeuille clients",
         type=["csv", "xls", "xlsx", "xlsm", "xlsb"],
         help=(
             "20 Mo maximum. Le fichier brut n'est pas conservé : seules les données "
@@ -197,7 +233,7 @@ def _admin_import_panel(
     geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
     commercial_count = clients["salesperson"].nunique()
     st.caption(
-        f"{len(clients)} entreprises · {commercial_count} commerciaux · {geocoded} déjà géocodées"
+        f"{len(clients)} clients · {commercial_count} commerciaux · {geocoded} déjà géocodés"
     )
     if st.button(
         "Enregistrer ce portefeuille",
@@ -214,12 +250,15 @@ def _admin_import_panel(
         except StorageError as exc:
             st.error(str(exc))
         else:
+            _load_persistent_app_state.clear()
             st.session_state.pop("route_plan", None)
             st.success("Le portefeuille sécurisé a été remplacé.")
             st.rerun()
 
 
-def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) -> None:
+def _admin_settings_panel(
+    store: ApplicationStore, configuration: RouteConfiguration
+) -> None:
     st.caption(
         "Ces contraintes sont communes à tous les utilisateurs et modifiables ici uniquement."
     )
@@ -236,6 +275,11 @@ def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) ->
             value=configuration.radius_km,
             format_func=lambda value: f"{value} km",
         )
+        return_to_start = st.toggle(
+            "Retour au point de départ par défaut",
+            value=configuration.return_to_start,
+            help="Une adresse d'arrivée saisie par l'utilisateur remplace ce comportement.",
+        )
         submitted = st.form_submit_button(
             "Enregistrer les paramètres",
             type="primary",
@@ -247,15 +291,166 @@ def _admin_settings_panel(store: AppStore, configuration: RouteConfiguration) ->
                 RouteConfiguration(
                     radius_km=int(radius_km),
                     max_visits=int(max_visits),
-                    return_to_start=False,
+                    return_to_start=bool(return_to_start),
                 )
             )
         except StorageError as exc:
             st.error(str(exc))
         else:
+            _load_persistent_app_state.clear()
             st.session_state.pop("route_plan", None)
             st.success("Les paramètres ont été enregistrés.")
             st.rerun()
+
+
+def _admin_access_panel(
+    store: ApplicationStore,
+    user: AuthenticatedUser,
+    clients: pd.DataFrame | None,
+) -> None:
+    st.caption(
+        "Les rôles sont attribués dans Microsoft Entra ID. Ce panneau définit uniquement "
+        "le périmètre de données des ATC et des directeurs."
+    )
+    profiles = store.list_access_profiles()
+    if profiles:
+        profile_table = pd.DataFrame(
+            [
+                {
+                    "Collaborateur": profile.display_name,
+                    "Object ID Entra": profile.principal_id,
+                    "Rôle attendu": "ATC" if profile.role == ROLE_ATC else "Directeur",
+                    "Code ATC": profile.atc_code or "",
+                    "Agences": ", ".join(profile.agencies),
+                    "Modifié le": profile.updated_at.replace("T", " "),
+                }
+                for profile in profiles
+            ]
+        )
+        st.dataframe(profile_table, hide_index=True, use_container_width=True)
+    else:
+        st.info("Aucune habilitation ATC ou directeur n'est encore configurée.")
+
+    st.markdown("##### Ajouter ou mettre à jour une habilitation")
+    st.caption(
+        "Utilisez le claim `oid` du compte Entra. Un rôle administrateur n'a pas besoin "
+        "d'habilitation, car son périmètre est global."
+    )
+    principal_id = st.text_input(
+        "Object ID Entra",
+        key="access_principal_id",
+        placeholder="00000000-0000-0000-0000-000000000000",
+    )
+    display_name = st.text_input(
+        "Nom affiché",
+        key="access_display_name",
+        placeholder="Prénom NOM",
+    )
+    role_label = st.radio(
+        "Rôle attendu",
+        ["ATC", "Directeur"],
+        horizontal=True,
+        key="access_role",
+    )
+
+    atc_rows = pd.DataFrame(columns=["salesperson_code", "salesperson"])
+    agencies: list[str] = []
+    if clients is not None:
+        atc_rows = (
+            clients[["salesperson_code", "salesperson"]]
+            .fillna("")
+            .astype(str)
+            .drop_duplicates()
+            .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+        )
+        agencies = sorted(
+            {
+                value.strip()
+                for value in clients["agency"].fillna("").astype(str)
+                if value.strip()
+            },
+            key=str.casefold,
+        )
+
+    selected_atc_code: str | None = None
+    selected_agencies: tuple[str, ...] = ()
+    if role_label == "ATC":
+        atc_options = atc_rows.index.tolist()
+        if atc_options:
+            selected_atc_index = st.selectbox(
+                "Code ATC et commercial",
+                atc_options,
+                format_func=lambda index: (
+                    f"{atc_rows.at[index, 'salesperson']} · "
+                    f"{atc_rows.at[index, 'salesperson_code']}"
+                ),
+                key="access_atc_scope",
+            )
+            selected_atc_code = str(atc_rows.at[selected_atc_index, "salesperson_code"])
+        else:
+            st.warning("Importez d'abord un portefeuille contenant des codes ATC.")
+    else:
+        selected_agencies = tuple(
+            st.multiselect(
+                "Agences autorisées",
+                agencies,
+                key="access_agency_scope",
+            )
+        )
+        if not agencies:
+            st.warning("Importez d'abord un portefeuille contenant des agences.")
+
+    if st.button(
+        "Enregistrer l'habilitation",
+        type="primary",
+        disabled=not principal_id.strip(),
+        key="save_access_profile",
+    ):
+        try:
+            store.save_access_profile(
+                UserAccessProfile(
+                    principal_id=principal_id,
+                    display_name=display_name,
+                    role=ROLE_ATC if role_label == "ATC" else ROLE_DIRECTOR,
+                    atc_code=selected_atc_code,
+                    agencies=selected_agencies,
+                ),
+                updated_by=user.display_name,
+            )
+        except StorageError as exc:
+            st.error(str(exc))
+        else:
+            st.success("L'habilitation a été enregistrée.")
+            st.rerun()
+
+    if profiles:
+        with st.expander("Révoquer une habilitation"):
+            profile_by_id = {profile.principal_id: profile for profile in profiles}
+            revoked_id = st.selectbox(
+                "Compte",
+                list(profile_by_id),
+                format_func=lambda value: (
+                    f"{profile_by_id[value].display_name} · {value}"
+                ),
+                key="revoke_access_profile",
+            )
+            confirmed = st.checkbox(
+                "Je confirme la révocation de cet accès aux données.",
+                key="confirm_revoke_access_profile",
+            )
+            if st.button(
+                "Révoquer l'habilitation",
+                disabled=not confirmed,
+                key="delete_access_profile",
+            ):
+                try:
+                    deleted = store.delete_access_profile(revoked_id)
+                except StorageError as exc:
+                    st.error(str(exc))
+                else:
+                    if deleted:
+                        st.success("L'habilitation a été révoquée.")
+                    st.rerun()
 
 
 def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> None:
@@ -305,7 +500,7 @@ def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> 
 
 
 def _render_admin_panel(
-    store: AppStore,
+    store: ApplicationStore,
     user: AuthenticatedUser,
     clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
@@ -313,15 +508,59 @@ def _render_admin_panel(
     azure_client: AzureMapsClient | None,
 ) -> None:
     with st.expander("⚙️ Administration", expanded=clients is None):
-        portfolio_tab, settings_tab, diagnostic_tab = st.tabs(
-            ["Portefeuille d'entreprises", "Contraintes", "Diagnostic Azure"]
+        portfolio_tab, access_tab, settings_tab, diagnostic_tab = st.tabs(
+            ["Portefeuille clients", "Habilitations", "Contraintes", "Diagnostic Azure"]
         )
         with portfolio_tab:
             _admin_import_panel(store, user, clients, metadata)
+        with access_tab:
+            _admin_access_panel(store, user, clients)
         with settings_tab:
             _admin_settings_panel(store, configuration)
         with diagnostic_tab:
             _azure_static_map_diagnostic_panel(azure_client)
+
+
+def _geocode_address(address: str, cache: GeocodeCache, point_name: str) -> StartPoint:
+    cached = cache.get(address)
+    if cached:
+        return StartPoint(
+            cached.latitude,
+            cached.longitude,
+            cached.formatted_address,
+            cached.formatted_address,
+        )
+    if azure_client is None:
+        raise PlanningError(
+            f"Configurez AZURE_MAPS_SUBSCRIPTION_KEY pour géocoder l'adresse {point_name}."
+        )
+    try:
+        result = azure_client.geocode(address)
+    except AzureMapsError as exc:
+        raise PlanningError(str(exc)) from exc
+    cache.set(address, result.latitude, result.longitude, result.formatted_address)
+    return StartPoint(
+        result.latitude,
+        result.longitude,
+        result.formatted_address,
+        result.formatted_address,
+    )
+
+
+def _address_field(prefix: str, title: str) -> str:
+    return st.text_input(
+        title,
+        placeholder="12 rue de la Paix, 14000 Caen, France",
+        key=f"{prefix}_address",
+        help="Saisissez l'adresse complète sur une seule ligne pour améliorer le géocodage.",
+    )
+
+
+def _validated_address(address: str, point_name: str) -> str:
+    address = address.strip()
+    if len(address) < 5:
+        raise PlanningError(f"Renseignez une adresse complète {point_name}.")
+    return address
 
 
 def _format_duration(seconds: int) -> str:
@@ -330,16 +569,22 @@ def _format_duration(seconds: int) -> str:
 
 
 def _render_plan_summary(plan: RoutePlan) -> None:
-    st.info(f"**Client de départ :** {plan.start.label}", icon="📍")
+    destination_label = (
+        plan.end.label
+        if plan.end is not None
+        else plan.start.label
+        if plan.return_to_start
+        else "Dernière entreprise visitée"
+    )
+    st.info(
+        f"**Départ :** {plan.start.label}  \n**Arrivée :** {destination_label}",
+        icon="📍",
+    )
     metric_columns = st.columns(3)
     metric_columns[0].metric("Distance totale", f"{plan.total_distance_m / 1000:.1f} km")
     metric_columns[1].metric("Temps de conduite", _format_duration(plan.total_duration_s))
-    metric_columns[2].metric("Entreprises à visiter", plan.visit_count)
-    st.caption(f"Calcul : {plan.provider} · {plan.candidates_in_radius} entreprises dans le rayon")
-    st.caption(
-        "L'ordre minimise le trajet global sur le réseau routier : le premier arrêt n'est donc pas "
-        "forcément l'entreprise la plus proche à vol d'oiseau."
-    )
+    metric_columns[2].metric("Clients à visiter", plan.visit_count)
+    st.caption(f"Calcul : {plan.provider} · {plan.candidates_in_radius} clients dans le rayon")
     render_map(
         plan,
         settings.azure_maps_key,
@@ -348,7 +593,8 @@ def _render_plan_summary(plan: RoutePlan) -> None:
     )
     st.markdown(
         "<span style='color:#1565C0'>●</span> Départ &nbsp;&nbsp; "
-        "<span style='color:#D32F2F'>●</span> Visite",
+        "<span style='color:#D32F2F'>●</span> Visite &nbsp;&nbsp; "
+        "<span style='color:#2E7D32'>●</span> Arrivée",
         unsafe_allow_html=True,
     )
 
@@ -357,14 +603,17 @@ def _render_results(
     plan: RoutePlan,
     route_client: AzureMapsClient | None,
 ) -> None:
+    st.markdown(
+        '<div class="opti-step-title opti-step-review">4. Revoir le parcours</div>',
+        unsafe_allow_html=True,
+    )
     st.subheader("Ordre de visite")
     st.caption(
-        "Décochez une ou plusieurs entreprises, puis appliquez la sélection pour recalculer la tournée."
+        "Décochez une visite facultative, puis appliquez la sélection pour recalculer la tournée."
     )
     visit_display = plan.table[
         [
             "Ordre",
-            "Type",
             "Client",
             "Ville",
             "Adresse",
@@ -374,18 +623,19 @@ def _render_results(
             "Temps cumulé",
         ]
     ].copy()
+    visit_display["Rendez-vous prévu"] = plan.table.get("Rendez-vous prévu", False)
     start_row = pd.DataFrame(
         [
             {
                 "Ordre": 0,
-                "Type": "Départ",
-                "Client": plan.start.label,
+                "Client": f"Départ · {plan.start.label}",
                 "Ville": "",
                 "Adresse": plan.start.address or plan.start.label,
                 "Distance": 0.0,
                 "Temps": 0.0,
                 "Distance cumulée": 0.0,
                 "Temps cumulé": 0.0,
+                "Rendez-vous prévu": False,
             }
         ]
     )
@@ -404,7 +654,6 @@ def _render_results(
         height=min(590, 42 + 35 * len(display)),
         disabled=[
             "Ordre",
-            "Type",
             "Client",
             "Ville",
             "Adresse",
@@ -412,20 +661,18 @@ def _render_results(
             "Temps",
             "Distance cumulée",
             "Temps cumulé",
+            "Rendez-vous prévu",
         ],
         column_config={
             "Conserver": st.column_config.CheckboxColumn("Visiter", required=True, width="small"),
             "Ordre": st.column_config.NumberColumn("Ordre", format="%d"),
-            "Type": st.column_config.TextColumn("Type", width="small"),
-            "Client": st.column_config.TextColumn("Entreprise", width="medium"),
+            "Rendez-vous prévu": st.column_config.CheckboxColumn(
+                "Rendez-vous", disabled=True, width="small"
+            ),
             "Distance": st.column_config.NumberColumn("Distance", format="%.1f km"),
             "Temps": st.column_config.NumberColumn("Temps", format="%.0f min"),
-            "Distance cumulée": st.column_config.NumberColumn(
-                "Distance cumulée", format="%.1f km", width="medium"
-            ),
-            "Temps cumulé": st.column_config.NumberColumn(
-                "Temps cumulé", format="%.0f min", width="medium"
-            ),
+            "Distance cumulée": st.column_config.NumberColumn("Cumul", format="%.1f km"),
+            "Temps cumulé": st.column_config.NumberColumn("Temps cumulé", format="%.0f min"),
         },
     )
     selected_positions = [
@@ -442,6 +689,8 @@ def _render_results(
     ]
     retained_positions = sorted(set(selected_positions).union(required_positions))
     selection_changed = set(retained_positions) != set(range(plan.visit_count))
+    if required_positions:
+        st.caption("Les rendez-vous prévus sont obligatoires et restent inclus dans le recalcul.")
     if not retained_positions:
         st.warning("Conservez au moins une entreprise pour recalculer la tournée.")
     if st.button(
@@ -513,9 +762,11 @@ with account_column:
     render_account_controls(authenticated_user)
 
 try:
-    store = AppStore(settings.app_storage_path)
-    clients, portfolio_metadata = store.load_clients()
-    route_configuration = store.load_route_configuration()
+    store = _initialize_app_store(settings)
+    clients, portfolio_metadata, route_configuration = _load_persistent_app_state(
+        settings.app_storage_backend,
+        store,
+    )
 except StorageError as exc:
     st.error(str(exc))
     st.stop()
@@ -534,15 +785,40 @@ if clients is None or portfolio_metadata is None:
     if authenticated_user.is_admin:
         st.warning("Aucun portefeuille actif. Importez-en un depuis le panneau Administration.")
     else:
-        st.info("Aucun portefeuille d'entreprises n'est disponible. Contactez l'administrateur.")
+        st.info("Aucun portefeuille clients n'est disponible. Contactez l'administrateur.")
     st.stop()
 
-salespeople = sorted(
-    value
-    for value in clients["salesperson"].dropna().astype(str).unique()
-    if value.strip() and value != "Tous"
+try:
+    access_profile = (
+        None
+        if authenticated_user.is_admin
+        else store.load_access_profile(authenticated_user.principal_id)
+    )
+    authorized_portfolio = authorize_portfolio(clients, authenticated_user, access_profile)
+except (AccessDeniedError, StorageError) as exc:
+    st.error(str(exc))
+    if authenticated_user.principal_id:
+        st.caption(f"Identifiant du compte : `{authenticated_user.principal_id}`")
+    st.stop()
+
+scoped_clients = authorized_portfolio.clients
+salesperson_rows = (
+    scoped_clients[["salesperson_code", "salesperson"]]
+    .fillna("")
+    .astype(str)
+    .drop_duplicates(subset=["salesperson_code"], keep="first")
 )
-if not salespeople:
+salesperson_rows = salesperson_rows[
+    salesperson_rows["salesperson_code"].str.strip().ne("")
+    & salesperson_rows["salesperson"].str.strip().ne("")
+    & salesperson_rows["salesperson"].ne("Tous")
+].sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+salesperson_codes = salesperson_rows["salesperson_code"].tolist()
+salesperson_labels = {
+    row.salesperson_code: f"{row.salesperson} · {row.salesperson_code}"
+    for row in salesperson_rows.itertuples(index=False)
+}
+if not salesperson_codes:
     st.error(
         "Le portefeuille actif ne contient aucun commercial exploitable. "
         "L'administrateur doit importer un fichier corrigé."
@@ -551,7 +827,8 @@ if not salespeople:
 
 source_signature = (
     f"{portfolio_metadata.digest}:{route_configuration.radius_km}:"
-    f"{route_configuration.max_visits}"
+    f"{route_configuration.max_visits}:{route_configuration.return_to_start}:"
+    f"{authenticated_user.principal_id}:{authorized_portfolio.signature}"
 )
 if st.session_state.get("source_signature") != source_signature:
     st.session_state["source_signature"] = source_signature
@@ -559,133 +836,204 @@ if st.session_state.get("source_signature") != source_signature:
 
 controls_column, map_column = st.columns([0.36, 0.64], gap="large")
 with controls_column:
-    st.subheader("Sélectionner votre portefeuille")
-    active_salesperson = st.selectbox("Commercial", salespeople)
-    assigned_clients = clients[clients["salesperson"].astype(str) == active_salesperson].copy()
-    st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
+    st.subheader("Préparer la tournée")
 
-    selection_identifier = hashlib.sha1(
-        f"{source_signature}|{active_salesperson}".encode()
-    ).hexdigest()[:12]
-    selection_default_key = f"selection_default_{selection_identifier}"
-    selection_version_key = f"selection_version_{selection_identifier}"
-    st.session_state.setdefault(selection_default_key, True)
-    st.session_state.setdefault(selection_version_key, 0)
-    select_column, deselect_column = st.columns(2)
-    if select_column.button(
-        "Tout sélectionner",
-        key=f"select_all_{selection_identifier}",
-        use_container_width=True,
-    ):
-        st.session_state[selection_default_key] = True
-        st.session_state[selection_version_key] += 1
-        st.rerun()
-    if deselect_column.button(
-        "Tout désélectionner",
-        key=f"deselect_all_{selection_identifier}",
-        use_container_width=True,
-    ):
-        st.session_state[selection_default_key] = False
-        st.session_state[selection_version_key] += 1
-        st.rerun()
-
-    selection_source = assigned_clients.reset_index(drop=True)
-    selection_table = pd.DataFrame(
-        {
-            "Sélectionner": st.session_state[selection_default_key],
-            "Entreprise": selection_source["client_name"].astype(str),
-            "Ville": selection_source["city"].fillna("").astype(str),
-            "Adresse": selection_source["full_address"].fillna("").astype(str),
-        }
-    )
-    edited_selection = st.data_editor(
-        selection_table,
-        key=(f"company_selection_{selection_identifier}_{st.session_state[selection_version_key]}"),
-        hide_index=True,
-        use_container_width=True,
-        height=min(300, max(145, 38 + 35 * len(selection_table))),
-        disabled=["Entreprise", "Ville", "Adresse"],
-        column_config={
-            "Sélectionner": st.column_config.CheckboxColumn(
-                "Visiter", required=True, width="small"
-            ),
-            "Entreprise": st.column_config.TextColumn("Entreprise", width="medium"),
-            "Ville": st.column_config.TextColumn("Ville", width="small"),
-            "Adresse": st.column_config.TextColumn("Adresse", width="large"),
-        },
-    )
-    selected_mask = edited_selection["Sélectionner"].fillna(False).astype(bool).to_numpy()
-    selected_clients = selection_source.loc[selected_mask].copy()
-    appointment_options = assigned_clients.copy()
-    appointment_options["display"] = (
-        appointment_options["client_name"].astype(str)
-        + " — "
-        + appointment_options["city"].fillna("").astype(str)
-    )
-    amc_start_positions = [
-        position
-        for position, client_name in enumerate(appointment_options["client_name"].fillna(""))
-        if "amc folliot" in str(client_name).casefold()
-    ]
-    selected_start_client = st.selectbox(
-        "Client de départ",
-        appointment_options.index,
-        index=amc_start_positions[0] if amc_start_positions else 0,
-        format_func=lambda index: appointment_options.at[index, "display"],
-        key=f"start_client_{selection_identifier}",
-        help="La tournée commence à l'adresse de cette entreprise.",
-    )
-    start_client_id = str(appointment_options.at[selected_start_client, "client_id"])
-    other_appointment_options = [
-        index for index in appointment_options.index if index != selected_start_client
-    ]
-    selected_other_appointments = st.multiselect(
-        "Autre rendez-vous déjà planifié (facultatif)",
-        other_appointment_options,
-        format_func=lambda index: appointment_options.at[index, "display"],
-        key=f"planned_appointments_{selection_identifier}_{start_client_id}",
-        help="Ces entreprises sont incluses dans la tournée, même si elles ne sont pas cochées ci-dessus.",
-    )
-    planned_appointment_ids = [
-        str(appointment_options.at[index, "client_id"])
-        for index in selected_other_appointments
-    ]
-    if selected_other_appointments:
-        planned_appointments = appointment_options.loc[selected_other_appointments]
-        selected_clients = (
-            pd.concat([selected_clients, planned_appointments], ignore_index=True)
-            .drop_duplicates(subset=["client_id"], keep="first")
+    with st.container(border=True):
+        st.markdown(
+            '<div class="opti-step-title opti-step-prospects">1. Choisir les visites</div>',
+            unsafe_allow_html=True,
         )
-    st.caption(f"{len(selected_clients)} entreprises sélectionnées")
-
-    minimum_visits = max(1, len(planned_appointment_ids))
-    if minimum_visits > route_configuration.max_visits:
-        st.error(
-            f"{len(planned_appointment_ids)} rendez-vous planifiés dépassent le maximum autorisé de {route_configuration.max_visits} visites."
-        )
-        requested_visits = route_configuration.max_visits
-    else:
-        requested_visits = st.select_slider(
-            "Nombre d'entreprises à visiter",
-            options=list(range(minimum_visits, route_configuration.max_visits + 1)),
-            value=route_configuration.max_visits,
+        st.caption("Obligatoire · sélectionnez au moins un prospect ou un rendez-vous prévu.")
+        active_salesperson_code = st.selectbox(
+            "Commercial",
+            salesperson_codes,
+            format_func=lambda code: salesperson_labels.get(code, code),
+            disabled=authenticated_user.is_atc,
             help=(
-                "La valeur est limitée par le maximum défini par l'administrateur. Les rendez-vous "
-                "planifiés sont compris dans ce total."
+                "Votre portefeuille est imposé par votre habilitation."
+                if authenticated_user.is_atc
+                else "Vous pouvez préparer une tournée pour un commercial de votre périmètre."
             ),
+        )
+        assigned_clients = scoped_clients[
+            scoped_clients["salesperson_code"].astype(str) == active_salesperson_code
+        ].copy()
+        st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
+
+        selection_identifier = hashlib.sha1(
+            f"{source_signature}|{active_salesperson_code}".encode()
+        ).hexdigest()[:12]
+        selection_default_key = f"selection_default_{selection_identifier}"
+        selection_version_key = f"selection_version_{selection_identifier}"
+        st.session_state.setdefault(selection_default_key, True)
+        st.session_state.setdefault(selection_version_key, 0)
+        select_column, deselect_column = st.columns(2)
+        if select_column.button(
+            "Tout sélectionner",
+            key=f"select_all_{selection_identifier}",
+            use_container_width=True,
+        ):
+            st.session_state[selection_default_key] = True
+            st.session_state[selection_version_key] += 1
+            st.rerun()
+        if deselect_column.button(
+            "Tout désélectionner",
+            key=f"deselect_all_{selection_identifier}",
+            use_container_width=True,
+        ):
+            st.session_state[selection_default_key] = False
+            st.session_state[selection_version_key] += 1
+            st.rerun()
+
+        selection_source = assigned_clients.reset_index(drop=True)
+        selection_table = pd.DataFrame(
+            {
+                "Sélectionner": st.session_state[selection_default_key],
+                "Entreprise": selection_source["client_name"].astype(str),
+                "Ville": selection_source["city"].fillna("").astype(str),
+                "Adresse": selection_source["full_address"].fillna("").astype(str),
+            }
+        )
+        edited_selection = st.data_editor(
+            selection_table,
+            key=(f"company_selection_{selection_identifier}_{st.session_state[selection_version_key]}"),
+            hide_index=True,
+            use_container_width=True,
+            height=min(300, max(145, 38 + 35 * len(selection_table))),
+            disabled=["Entreprise", "Ville", "Adresse"],
+            column_config={
+                "Sélectionner": st.column_config.CheckboxColumn(
+                    "Visiter", required=True, width="small"
+                ),
+                "Entreprise": st.column_config.TextColumn("Entreprise", width="medium"),
+                "Ville": st.column_config.TextColumn("Ville", width="small"),
+                "Adresse": st.column_config.TextColumn("Adresse", width="large"),
+            },
+        )
+        selected_mask = edited_selection["Sélectionner"].fillna(False).astype(bool).to_numpy()
+        selected_clients = selection_source.loc[selected_mask].copy()
+
+        appointment_options = assigned_clients.reset_index(drop=True).copy()
+        appointment_options["display"] = (
+            appointment_options["client_name"].astype(str)
+            + " — "
+            + appointment_options["city"].fillna("").astype(str)
+        )
+        selected_planned_indices = st.multiselect(
+            "Rendez-vous déjà planifiés (facultatif)",
+            appointment_options.index.tolist(),
+            format_func=lambda index: appointment_options.at[index, "display"],
+            key=f"planned_appointments_{selection_identifier}",
+            help="Ils sont ajoutés à la tournée, même s'ils ne sont pas cochés ci-dessus, et restent obligatoires lors d'un recalcul.",
+        )
+        planned_appointment_ids = list(
+            dict.fromkeys(
+                str(appointment_options.at[index, "client_id"])
+                for index in selected_planned_indices
+            )
+        )
+        planned_clients = appointment_options.loc[selected_planned_indices].drop(
+            columns=["display"], errors="ignore"
+        ).drop_duplicates(subset=["client_id"], keep="first")
+        clients_for_route = pd.concat(
+            [selected_clients, planned_clients], ignore_index=True
+        ).drop_duplicates(subset=["client_id"], keep="first")
+        st.caption(
+            f"{len(selected_clients)} prospects sélectionnés · "
+            f"{len(planned_appointment_ids)} rendez-vous prévu(s)"
+        )
+
+        minimum_visits = max(1, len(planned_appointment_ids))
+        if minimum_visits > route_configuration.max_visits:
+            st.error(
+                f"{len(planned_appointment_ids)} rendez-vous prévus dépassent le maximum autorisé de {route_configuration.max_visits} visites."
+            )
+            requested_visits = route_configuration.max_visits
+        else:
+            requested_visits = st.select_slider(
+                "Nombre total de visites",
+                options=list(range(minimum_visits, route_configuration.max_visits + 1)),
+                value=route_configuration.max_visits,
+                help=(
+                    "Les rendez-vous prévus sont compris dans ce total. Les autres prospects les plus proches "
+                    "du départ sont retenus en priorité."
+                ),
+            )
+
+    with st.container(border=True):
+        st.markdown(
+            '<div class="opti-step-title opti-step-start">2. Choisir le point de départ</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Obligatoire · choisissez votre position ou un client existant.")
+        start_mode = st.radio(
+            "Point de départ",
+            ["Ma position", "Client existant"],
+            index=1,
+            horizontal=True,
+        )
+        location_value = None
+        start_client_id: str | None = None
+        if start_mode == "Ma position":
+            location_value = browser_location(key="browser_geolocation", default=None)
+            if location_value:
+                st.success(
+                    f"Position : {location_value['latitude']:.5f}, {location_value['longitude']:.5f}",
+                    icon="📍",
+                )
+        else:
+            selected_start_index = st.selectbox(
+                "Client de départ",
+                appointment_options.index,
+                format_func=lambda index: appointment_options.at[index, "display"],
+                key=f"start_client_{selection_identifier}",
+            )
+            start_client_id = str(appointment_options.at[selected_start_index, "client_id"])
+            if start_client_id in planned_appointment_ids:
+                st.info("Ce rendez-vous devient le point de départ (ordre 0) et ne sera donc pas une visite distincte.")
+
+    with st.container(border=True):
+        st.markdown(
+            '<div class="opti-step-title opti-step-arrival">3. Choisir l’arrivée</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Obligatoire · définissez comment se termine la tournée.")
+        arrival_choices = [
+            "Retour au point de départ",
+            "Terminer à la dernière visite",
+            "Adresse d'arrivée spécifique",
+        ]
+        default_arrival = 0 if route_configuration.return_to_start else 1
+        arrival_mode = st.radio(
+            "Fin de tournée",
+            arrival_choices,
+            index=default_arrival,
+        )
+        custom_arrival = arrival_mode == "Adresse d'arrivée spécifique"
+        return_to_start = arrival_mode == "Retour au point de départ"
+        arrival_address = ""
+        if custom_arrival:
+            arrival_address = _address_field("arrival", "Adresse d'arrivée")
+
+    with st.container(border=True):
+        st.markdown("##### Contraintes définies par l'administrateur")
+        st.caption(
+            f"Maximum autorisé : **{route_configuration.max_visits} visite(s)** · "
+            f"Rayon : **{route_configuration.radius_km} km** · "
+            "le choix d'arrivée ci-dessus est appliqué à cette tournée."
         )
 
     generate = st.button("Générer ma tournée", type="primary", use_container_width=True)
     if generate:
         try:
-            if selected_clients.empty:
-                raise PlanningError("Sélectionnez au moins une entreprise à visiter.")
+            if clients_for_route.empty:
+                raise PlanningError("Sélectionnez au moins un prospect ou un rendez-vous prévu.")
             if len(planned_appointment_ids) > route_configuration.max_visits:
                 raise PlanningError(
-                    "Réduisez le nombre de rendez-vous planifiés avant de générer la tournée."
+                    "Réduisez le nombre de rendez-vous prévus avant de générer la tournée."
                 )
             cache = GeocodeCache(settings.geocode_cache_path)
-            progress_bar = st.progress(0, text="Vérification des coordonnées des entreprises…")
+            progress_bar = st.progress(0, text="Vérification des coordonnées clients…")
 
             def update_progress(position: int, total: int, client_name: str) -> None:
                 progress_bar.progress(
@@ -693,14 +1041,14 @@ with controls_column:
                     text=f"Géocodage {position}/{total} · {client_name}",
                 )
 
-            clients_to_geocode = selected_clients.copy()
-            start_source = assigned_clients[
-                assigned_clients["client_id"].astype(str) == start_client_id
-            ]
-            clients_to_geocode = pd.concat([clients_to_geocode, start_source], ignore_index=True)
-            clients_to_geocode = clients_to_geocode.drop_duplicates(
-                subset=["client_id"], keep="first"
-            )
+            clients_to_geocode = clients_for_route.copy()
+            if start_client_id is not None:
+                start_source = assigned_clients[
+                    assigned_clients["client_id"].astype(str) == start_client_id
+                ]
+                clients_to_geocode = pd.concat(
+                    [clients_to_geocode, start_source], ignore_index=True
+                ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
                 clients_to_geocode,
                 azure_client,
@@ -709,43 +1057,76 @@ with controls_column:
             )
             progress_bar.empty()
 
-            visitable_clients = enriched_clients[
-                enriched_clients["client_id"].astype(str) != start_client_id
-            ]
+            if start_mode == "Ma position":
+                if not location_value:
+                    raise PlanningError(
+                        "Cliquez sur « Utiliser ma position actuelle » et autorisez la localisation."
+                    )
+                start = StartPoint(
+                    float(location_value["latitude"]),
+                    float(location_value["longitude"]),
+                    "Ma position",
+                )
+            else:
+                start_client = enriched_clients[
+                    enriched_clients["client_id"].astype(str) == start_client_id
+                ]
+                if start_client.empty or start_client[["latitude", "longitude"]].isna().any(
+                    axis=None
+                ):
+                    raise PlanningError("Le client choisi comme point de départ n'a pas pu être géocodé.")
+                row = start_client.iloc[0]
+                start = StartPoint(
+                    float(row["latitude"]),
+                    float(row["longitude"]),
+                    f"Client · {row['client_name']}",
+                    str(row.get("full_address", "")) or None,
+                )
+
+            visitable_clients = enriched_clients
+            if start_client_id is not None:
+                visitable_clients = visitable_clients[
+                    visitable_clients["client_id"].astype(str) != start_client_id
+                ]
             if visitable_clients.dropna(subset=["latitude", "longitude"]).empty:
                 error_details = " · ".join(geocode_errors[:3])
                 raise PlanningError(
-                    "Aucune entreprise sélectionnée n'a pu être géocodée."
+                    "Aucun prospect ou rendez-vous prévu à visiter n'a pu être géocodé."
                     + (f" {error_details}" if error_details else "")
                 )
 
-            start_client = enriched_clients[
-                enriched_clients["client_id"].astype(str) == start_client_id
-            ]
-            if start_client.empty or start_client[["latitude", "longitude"]].isna().any(axis=None):
-                raise PlanningError("Le client de départ n'a pas pu être géocodé.")
-            row = start_client.iloc[0]
-            start = StartPoint(
-                float(row["latitude"]),
-                float(row["longitude"]),
-                str(row["client_name"]),
-                str(row.get("full_address", "")) or None,
-            )
+            end: StartPoint | None = None
+            if custom_arrival:
+                arrival_address = _validated_address(arrival_address, "d'arrivée")
+                geocoded_end = _geocode_address(arrival_address, cache, "d'arrivée")
+                end = StartPoint(
+                    geocoded_end.latitude,
+                    geocoded_end.longitude,
+                    f"Arrivée · {geocoded_end.label}",
+                    geocoded_end.address,
+                )
 
+            effective_required_ids = [
+                client_id
+                for client_id in planned_appointment_ids
+                if client_id != start_client_id
+            ]
             plan = build_route_plan(
                 visitable_clients,
                 start,
                 radius_km=float(route_configuration.radius_km),
                 max_visits=int(requested_visits),
                 max_duration_hours=None,
-                return_to_start=False,
+                return_to_start=return_to_start,
                 objective="time",
                 azure_client=azure_client,
-                required_client_ids=planned_appointment_ids,
+                excluded_client_id=start_client_id,
+                end=end,
+                required_client_ids=effective_required_ids,
             )
             if geocode_errors:
                 plan.warnings.append(
-                    f"{len(geocode_errors)} entreprises n'ont pas pu être géocodées. "
+                    f"{len(geocode_errors)} clients n'ont pas pu être géocodés. "
                     + " · ".join(geocode_errors[:3])
                 )
             st.session_state["route_plan"] = plan
@@ -762,7 +1143,7 @@ with map_column:
             <div class="opti-empty">
               <div class="opti-empty-icon">🗺️</div>
               <h3>Votre tournée apparaîtra ici</h3>
-              <div>Sélectionnez les entreprises et le client de départ.</div>
+              <div>Choisissez le commercial, les entreprises et le point de départ.</div>
             </div>
             """,
             unsafe_allow_html=True,

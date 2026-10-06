@@ -63,6 +63,15 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "societe",
         "nom",
     ),
+    "salesperson_code": (
+        "salesperson_code",
+        "code_atc",
+        "atc_code",
+        "code_commercial",
+        "matricule_atc",
+        "matricule_commercial",
+        "id_commercial",
+    ),
     "salesperson": (
         "salesperson",
         "commercial",
@@ -232,11 +241,15 @@ def standardize_clients(
         clients[target] = raw[source_column] if source_column else pd.NA
 
     clients["salesperson"] = clients["salesperson"].fillna("Tous")
+    clients["salesperson_code"] = clients["salesperson_code"].fillna(
+        clients["salesperson"]
+    )
     clients["country"] = clients["country"].fillna("France")
 
     text_columns = [
         "client_id",
         "client_name",
+        "salesperson_code",
         "salesperson",
         "agency",
         "agency_address",

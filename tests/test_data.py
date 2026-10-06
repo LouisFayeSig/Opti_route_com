@@ -42,6 +42,22 @@ def test_detects_real_world_french_column_variants() -> None:
     assert clients.loc[0, "full_address"] == "1 rue du Test, Bâtiment A, 14000, Caen, France"
 
 
+def test_detects_atc_code_and_falls_back_to_salesperson_for_legacy_files() -> None:
+    with_code = pd.DataFrame(
+        {
+            "Code client": ["C1"],
+            "Client": ["Alpha"],
+            "Commercial": ["Alice"],
+            "Code ATC": ["ATC-001"],
+            "Adresse": ["1 rue du Test, Caen"],
+        }
+    )
+    legacy = with_code.drop(columns=["Code ATC"])
+
+    assert standardize_clients(with_code).loc[0, "salesperson_code"] == "ATC-001"
+    assert standardize_clients(legacy).loc[0, "salesperson_code"] == "Alice"
+
+
 def test_manual_mapping_accepts_unknown_column_names() -> None:
     raw = pd.DataFrame(
         {

@@ -23,7 +23,6 @@ _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\x00", "＝", "＋",
 def _export_table(plan: RoutePlan):
     return plan.itinerary_table().rename(
         columns={
-            "Client": "Entreprise",
             "Distance": "Distance depuis le précédent (km)",
             "Temps": "Temps depuis le précédent (min)",
             "Distance cumulée": "Distance cumulée (km)",
@@ -71,17 +70,23 @@ def excel_bytes(plan: RoutePlan) -> bytes:
         summary = pd.DataFrame(
             {
                 "Indicateur": [
-                    "Client de départ",
-                    "Nombre d'entreprises à visiter",
+                    "Départ",
+                    "Arrivée",
+                    "Nombre de visites",
                     "Distance totale (km)",
                     "Durée totale (min)",
+                    "Retour au départ",
                     "Source des estimations",
                 ],
                 "Valeur": [
                     plan.start.label,
+                    plan.end.label
+                    if plan.end is not None
+                    else (plan.start.label if plan.return_to_start else "Dernier client"),
                     plan.visit_count,
                     round(plan.total_distance_m / 1000, 1),
                     round(plan.total_duration_s / 60),
+                    "Oui" if plan.return_to_start else "Non",
                     plan.provider,
                 ],
             }
@@ -126,49 +131,22 @@ def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600)
 
     stop_points = plan.route_coordinates[:-1] if plan.return_to_start else plan.route_coordinates
     stop_pixels = [pixel(point) for point in stop_points]
-    colors_by_stop = ["#1565C0", *["#D32F2F"] * (len(stop_points) - 1)]
+    colors_by_stop = ["#1565C0"]
+    colors_by_stop.extend(
+        "#2E7D32" if not plan.return_to_start and index == len(stop_points) - 1 else "#D32F2F"
+        for index in range(1, len(stop_points))
+    )
     draw_stop_labels(image, stop_pixels, plan.map_stop_labels, colors_by_stop)
 
-    draw.text((padding, 18), f"Tournée · {plan.visit_count} entreprises", fill="#263238")
+    draw.text((padding, 18), f"Tournée · {plan.visit_count} visites", fill="#263238")
     draw.text(
         (padding, height - 30),
-        "Bleu : client de départ   Rouge : visite   —   Schéma sans fond cartographique",
+        "Bleu : départ   Rouge : visite   Vert : arrivée   —   Schéma sans fond cartographique",
         fill="#607080",
     )
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
-
-
-def _pdf_route_table(plan: RoutePlan) -> pd.DataFrame:
-    """Reprend les informations visibles dans le tableau de revue de la tournée."""
-    columns = [
-        "Ordre",
-        "Type",
-        "Client",
-        "Ville",
-        "Adresse",
-        "Distance",
-        "Temps",
-        "Distance cumulée",
-        "Temps cumulé",
-    ]
-    start_row = pd.DataFrame(
-        [
-            {
-                "Ordre": 0,
-                "Type": "Départ",
-                "Client": plan.start.label,
-                "Ville": "",
-                "Adresse": plan.start.address or plan.start.label,
-                "Distance": 0.0,
-                "Temps": 0.0,
-                "Distance cumulée": 0.0,
-                "Temps cumulé": 0.0,
-            }
-        ]
-    )
-    return pd.concat([start_row, plan.table[columns]], ignore_index=True)
 
 
 def pdf_bytes(plan: RoutePlan) -> bytes:
@@ -186,7 +164,7 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     content = [Paragraph("Tournée commerciale", styles["Title"])]
     content.append(
         Paragraph(
-            f"{plan.visit_count} entreprises — {plan.total_distance_m / 1000:.1f} km — "
+            f"{plan.visit_count} visites — {plan.total_distance_m / 1000:.1f} km — "
             f"{plan.total_duration_s / 60:.0f} min — {plan.provider}",
             styles["Normal"],
         )
@@ -198,23 +176,20 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     content.append(Spacer(1, 5 * mm))
     content.append(
         Paragraph(
-            "<font color='#1565C0'>●</font> Client de départ &nbsp;&nbsp; "
-            "<font color='#D32F2F'>●</font> Visite",
+            "<font color='#1565C0'>●</font> Départ &nbsp;&nbsp; "
+            "<font color='#D32F2F'>●</font> Visite &nbsp;&nbsp; "
+            "<font color='#2E7D32'>●</font> Arrivée",
             styles["Normal"],
         )
     )
     content.append(Spacer(1, 8 * mm))
-    export = _pdf_route_table(plan)
+    export = _export_table(plan)
     columns = [
-        "Ordre",
-        "Type",
-        "Entreprise",
+        "Étape",
+        "Client",
         "Ville",
         "Adresse",
-        "Distance",
-        "Temps",
-        "Distance cumulée",
-        "Temps cumulé",
+        "Temps depuis le précédent (min)",
     ]
     header_style = styles["BodyText"].clone("PdfTableHeader")
     header_style.fontName = "Helvetica-Bold"
@@ -226,23 +201,19 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     cell_style.fontName = "Helvetica"
     cell_style.fontSize = 7
     cell_style.leading = 8.5
-    for _, row in export.iterrows():
+    for _, row in export[columns].iterrows():
         rows.append(
             [
-                str(int(row["Ordre"])),
-                Paragraph(escape(str(row["Type"])), cell_style),
+                str(row["Étape"]),
                 Paragraph(escape(str(row["Client"])), cell_style),
                 Paragraph(escape(str(row["Ville"])), cell_style),
                 Paragraph(escape(str(row["Adresse"])), cell_style),
-                f"{float(row['Distance']):.1f} km",
-                f"{float(row['Temps']):.0f} min",
-                f"{float(row['Distance cumulée']):.1f} km",
-                f"{float(row['Temps cumulé']):.0f} min",
+                f"{float(row['Temps depuis le précédent (min)']):.0f}",
             ]
         )
     table = Table(
         rows,
-        colWidths=[14 * mm, 18 * mm, 42 * mm, 26 * mm, 72 * mm, 21 * mm, 18 * mm, 29 * mm, 24 * mm],
+        colWidths=[15 * mm, 55 * mm, 35 * mm, 105 * mm, 35 * mm],
         repeatRows=1,
     )
     table.setStyle(

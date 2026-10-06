@@ -14,7 +14,7 @@ from opti_route.exporting import (
     sanitize_spreadsheet_value,
 )
 from opti_route.optimizer import optimize_route
-from opti_route.planner import StartPoint, build_route_plan, rebuild_route_plan
+from opti_route.planner import PlanningError, StartPoint, build_route_plan, rebuild_route_plan
 
 
 def test_optimizer_visits_each_node_and_returns() -> None:
@@ -139,21 +139,15 @@ def test_planner_prioritizes_the_closest_selected_companies() -> None:
     assert plan.table.iloc[0]["Client"] == "Entreprise proche"
 
 
-def test_planner_keeps_planned_appointments_outside_the_radius_and_when_rebuilt() -> None:
+def test_planner_keeps_planned_appointments_outside_the_radius() -> None:
     clients = pd.DataFrame(
         {
-            "client_id": ["NEAR", "PLANNED", "OTHER"],
-            "client_name": ["Entreprise proche", "Rendez-vous prévu", "Autre entreprise"],
-            "salesperson": ["Morgan"] * 3,
-            "address": ["Adresse proche", "Adresse prévue", "Autre adresse"],
-            "address_2": [pd.NA] * 3,
-            "address_3": [pd.NA] * 3,
-            "postal_code": ["14000", "75000", "14200"],
-            "city": ["Caen", "Paris", "Hérouville-Saint-Clair"],
-            "country": ["France"] * 3,
-            "latitude": [49.184, 48.8566, 49.230],
-            "longitude": [-0.371, 2.3522, -0.300],
-            "full_address": ["Proche", "Prévu", "Autre"],
+            "client_id": ["NEAR", "PLANNED"],
+            "client_name": ["Entreprise proche", "Rendez-vous Paris"],
+            "city": ["Caen", "Paris"],
+            "full_address": ["Caen", "Paris"],
+            "latitude": [49.184, 48.8566],
+            "longitude": [-0.371, 2.3522],
         }
     )
 
@@ -168,14 +162,45 @@ def test_planner_keeps_planned_appointments_outside_the_radius_and_when_rebuilt(
         required_client_ids=["PLANNED"],
     )
 
-    assert plan.visit_count == 2
-    assert plan.table.loc[plan.table["Client"] == "Rendez-vous prévu", "Type"].item() == "Client"
+    assert set(plan.table["Code client"]) == {"NEAR", "PLANNED"}
     assert plan.required_client_ids == frozenset({"PLANNED"})
+    assert plan.table.loc[
+        plan.table["Code client"] == "PLANNED", "Rendez-vous prévu"
+    ].item()
     assert any("hors du rayon" in warning for warning in plan.warnings)
 
     near_position = plan.table.index[plan.table["Code client"] == "NEAR"].item()
     rebuilt = rebuild_route_plan(plan, [near_position])
     assert "PLANNED" in rebuilt.table["Code client"].tolist()
+
+
+def test_planner_rejects_more_planned_appointments_than_allowed() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["A", "B"],
+            "client_name": ["Alpha", "Beta"],
+            "city": ["Caen", "Caen"],
+            "full_address": ["A", "B"],
+            "latitude": [49.183, 49.184],
+            "longitude": [-0.370, -0.371],
+        }
+    )
+
+    try:
+        build_route_plan(
+            clients,
+            StartPoint(49.1829, -0.3707, "Départ"),
+            radius_km=20,
+            max_visits=1,
+            max_duration_hours=None,
+            return_to_start=False,
+            objective="time",
+            required_client_ids=["A", "B"],
+        )
+    except PlanningError as exc:
+        assert "rendez-vous prévus" in str(exc)
+    else:
+        raise AssertionError("La limite de rendez-vous prévus doit être contrôlée.")
 
 
 def test_result_can_be_rebuilt_after_a_visit_is_unchecked() -> None:
@@ -265,7 +290,7 @@ def test_csv_and_excel_exports_keep_untrusted_values_as_text() -> None:
     workbook = load_workbook(io.BytesIO(excel_bytes(plan)), data_only=False)
     route_sheet = workbook["Tournée"]
     headers = [cell.value for cell in route_sheet[1]]
-    client_column = headers.index("Entreprise") + 1
+    client_column = headers.index("Client") + 1
     city_column = headers.index("Ville") + 1
     address_column = headers.index("Adresse") + 1
     client_cell = route_sheet.cell(row=3, column=client_column)

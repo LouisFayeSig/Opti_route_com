@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -62,7 +62,6 @@ class RoutePlan:
         rows: list[dict[str, object]] = [
             {
                 "Étape": "Départ",
-                "Type": "",
                 "Client": self.start.label,
                 "Ville": "",
                 "Adresse": self.start.address or self.start.label,
@@ -76,7 +75,6 @@ class RoutePlan:
             rows.append(
                 {
                     "Étape": str(int(visit["Ordre"])),
-                    "Type": visit.get("Type", "Client"),
                     "Client": visit["Client"],
                     "Ville": visit["Ville"],
                     "Adresse": visit["Adresse"],
@@ -95,7 +93,6 @@ class RoutePlan:
             rows.append(
                 {
                     "Étape": "Retour" if is_return else "Arrivée",
-                    "Type": "",
                     "Client": destination.label,
                     "Ville": "",
                     "Adresse": destination.address or destination.label,
@@ -118,44 +115,57 @@ def build_route_plan(
     objective: str,
     azure_client: AzureMapsClient | None = None,
     excluded_client_id: str | None = None,
-    required_client_ids: Sequence[str] = (),
     end: StartPoint | None = None,
+    required_client_ids: Collection[str] | None = None,
 ) -> RoutePlan:
     if end is not None:
         return_to_start = False
-    required_ids = frozenset(str(client_id) for client_id in required_client_ids if client_id)
+    required_ids = frozenset(str(client_id) for client_id in (required_client_ids or ()) if client_id)
     eligible_clients = clients.copy()
     if excluded_client_id is not None:
         eligible_clients = eligible_clients[
             eligible_clients["client_id"].astype(str) != str(excluded_client_id)
         ]
-    required = eligible_clients[
+    required_rows = eligible_clients[
         eligible_clients["client_id"].astype(str).isin(required_ids)
     ].dropna(subset=["latitude", "longitude"])
-    required = required.drop_duplicates(subset=["client_id"], keep="first")
-    missing_required_ids = required_ids.difference(required["client_id"].astype(str))
+    required_rows = required_rows.drop_duplicates(subset=["client_id"], keep="first")
+    available_required_ids = set(required_rows["client_id"].astype(str))
+    missing_required_ids = required_ids.difference(available_required_ids)
     if missing_required_ids:
         raise PlanningError(
-            "Un rendez-vous planifié n'a pas de coordonnées exploitables ou correspond au point de départ."
+            "Un rendez-vous prévu n'a pas de coordonnées exploitables ou correspond au point de départ."
         )
-    if len(required) > max_visits:
+    if len(required_rows) > max_visits:
         raise PlanningError(
-            f"{len(required)} rendez-vous planifiés dépassent le maximum de {max_visits} entreprises à visiter."
+            f"{len(required_rows)} rendez-vous prévus dépassent le maximum de {max_visits} visites."
         )
 
     candidates = clients_within_radius(
         eligible_clients, start.latitude, start.longitude, radius_km
     )
     candidate_count = len(candidates)
-    if candidates.empty and required.empty:
+    if candidates.empty and required_rows.empty:
         raise PlanningError(
             f"Aucun client géocodé n'a été trouvé dans un rayon de {radius_km:g} km."
         )
 
-    optional = candidates[~candidates["client_id"].astype(str).isin(required_ids)]
+    optional_candidates = candidates[
+        ~candidates["client_id"].astype(str).isin(required_ids)
+    ]
     selected = pd.concat(
-        [required, optional.head(max_visits - len(required))], ignore_index=True
+        [required_rows, optional_candidates.head(max_visits - len(required_rows))],
+        ignore_index=True,
     ).drop_duplicates(subset=["client_id"], keep="first")
+    warnings: list[str] = []
+    required_outside_radius = len(required_rows) - int(
+        required_rows["client_id"].astype(str).isin(candidates["client_id"].astype(str)).sum()
+    )
+    if required_outside_radius:
+        warnings.append(
+            f"{required_outside_radius} rendez-vous prévu(s) hors du rayon ont été inclus."
+        )
+
     node_coordinates = [(start.latitude, start.longitude)] + list(
         zip(selected["latitude"].astype(float), selected["longitude"].astype(float))
     )
@@ -163,14 +173,6 @@ def build_route_plan(
     if end is not None:
         node_coordinates.append((end.latitude, end.longitude))
         end_node = len(node_coordinates) - 1
-    warnings: list[str] = []
-    required_outside_radius = len(required) - int(
-        required["client_id"].astype(str).isin(candidates["client_id"].astype(str)).sum()
-    )
-    if required_outside_radius:
-        warnings.append(
-            f"{required_outside_radius} rendez-vous planifié(s) hors du rayon ont été inclus."
-        )
     provider = "Estimation géodésique"
     if azure_client is not None:
         try:
@@ -212,7 +214,6 @@ def build_route_plan(
         rows.append(
             {
                 "Ordre": order,
-                "Type": "Client",
                 "Client": client["client_name"],
                 "Ville": client.get("city", ""),
                 "Adresse": client.get("full_address", ""),
@@ -223,6 +224,7 @@ def build_route_plan(
                 "Latitude": float(client["latitude"]),
                 "Longitude": float(client["longitude"]),
                 "Code client": client["client_id"],
+                "Rendez-vous prévu": str(client["client_id"]) in required_ids,
             }
         )
         previous = node
@@ -281,7 +283,9 @@ def rebuild_route_plan(
 ) -> RoutePlan:
     """Recalcule entièrement une tournée après retrait de visites du résultat."""
     positions = sorted(set(retained_visit_positions))
-    if positions and (positions[0] < 0 or positions[-1] >= plan.visit_count):
+    if not positions:
+        raise PlanningError("Conservez au moins une entreprise dans la tournée.")
+    if positions[0] < 0 or positions[-1] >= plan.visit_count:
         raise PlanningError("La sélection des visites est invalide.")
 
     mandatory_positions = [
@@ -290,8 +294,6 @@ def rebuild_route_plan(
         if client_id in plan.required_client_ids
     ]
     positions = sorted(set(positions).union(mandatory_positions))
-    if not positions:
-        raise PlanningError("Conservez au moins une entreprise dans la tournée.")
 
     visits = plan.table.iloc[positions]
     clients = pd.DataFrame(
