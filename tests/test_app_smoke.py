@@ -1,6 +1,31 @@
 from pathlib import Path
+from uuid import uuid4
 
+import pandas as pd
 from streamlit.testing.v1 import AppTest
+
+from opti_route.storage import AppStore
+
+
+def _portfolio() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "client_id": ["A", "B"],
+            "client_name": ["AMC Folliot", "Autre entreprise"],
+            "salesperson": ["Morgan", "Morgan"],
+            "agency": ["Caen", "Caen"],
+            "agency_address": ["8 rue Ampère, 14120 Mondeville"] * 2,
+            "address": ["1 rue du Test", "2 rue du Test"],
+            "address_2": [pd.NA, pd.NA],
+            "address_3": [pd.NA, pd.NA],
+            "postal_code": ["14000", "14000"],
+            "city": ["Caen", "Caen"],
+            "country": ["France", "France"],
+            "latitude": [49.183, 49.184],
+            "longitude": [-0.370, -0.371],
+            "full_address": ["1 rue du Test, 14000 Caen", "2 rue du Test, 14000 Caen"],
+        }
+    )
 
 
 def test_streamlit_page_loads_without_exception(monkeypatch) -> None:
@@ -38,6 +63,34 @@ def test_password_mode_accepts_configured_credentials(monkeypatch) -> None:
     assert not app.exception
     assert any("Connecté : collaborateur-test" in caption.value for caption in app.caption)
     assert len(app.file_uploader) == 0
+
+
+def test_user_route_form_guides_from_a_client_start(monkeypatch) -> None:
+    monkeypatch.setenv("AUTH_MODE", "none")
+    storage_path = Path(".cache") / f"app-flow-test-{uuid4().hex}.sqlite3"
+    store = AppStore(storage_path)
+    store.save_clients(_portfolio(), source_name="portfolio.xlsx", imported_by="Test")
+    monkeypatch.setenv("APP_STORAGE_PATH", str(storage_path.resolve()))
+    app_path = Path(__file__).parents[1] / "app.py"
+
+    try:
+        app = AppTest.from_file(str(app_path), default_timeout=30).run()
+        labels = [selectbox.label for selectbox in app.selectbox]
+
+        assert not app.exception
+        assert app.subheader[0].value == "Sélectionner votre portefeuille"
+        assert labels == [
+            "Commercial",
+            "Client de départ",
+        ]
+        assert [multiselect.label for multiselect in app.multiselect] == [
+            "Autre rendez-vous déjà planifié (facultatif)"
+        ]
+        assert len(app.radio) == 0
+        assert len(app.toggle) == 0
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
 
 
 def test_admin_account_can_access_portfolio_import(monkeypatch) -> None:

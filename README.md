@@ -1,6 +1,6 @@
 # Opti Route Com
 
-Application Streamlit interne pour préparer et optimiser des tournées commerciales à partir d'un portefeuille clients.
+Application Streamlit interne pour préparer et optimiser des tournées commerciales à partir d'un portefeuille d'entreprises.
 
 ## Fonctionnalités du MVP
 
@@ -9,18 +9,18 @@ Application Streamlit interne pour préparer et optimiser des tournées commerci
 - choix de la feuille et de la ligne d'en-tête ;
 - séparation des rôles administrateur et utilisateur ;
 - stockage du portefeuille normalisé dans SQLite sans conservation du classeur brut ;
-- choix obligatoire du commercial ;
-- choix utilisateur du nombre de visites, entre 1 et le maximum administrateur ;
+- choix du commercial et sélection de son portefeuille d'entreprises ;
+- choix d'un client de départ et ajout facultatif d'un ou plusieurs rendez-vous déjà planifiés ;
+- choix utilisateur du nombre d'entreprises à visiter, entre 1 et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
 - retrait de visites depuis le résultat avec recalcul complet de la tournée ;
-- départ depuis la position du navigateur, une adresse, un client existant ou l'agence du commercial ;
-- adresse d'arrivée spécifique facultative ;
 - cache SQLite des adresses géocodées ;
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
-- export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
+- tournée sans arrivée ni retour au point de départ ;
+- export PDF avec capture cartographique numérotée et le même tableau que l'écran, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
 - authentification Microsoft Entra ID ou identifiant/mot de passe générique ;
@@ -72,7 +72,7 @@ préférer Entra ID.
 
 Le compte `ADMIN_USERNAME` dispose du panneau **Administration**. Le compte utilisateur ne voit ni
 l'import ni les contrôles des contraintes et peut seulement choisir le commercial, les entreprises,
-le départ et une éventuelle adresse d'arrivée.
+le client de départ et d'éventuels rendez-vous déjà planifiés.
 
 ### Microsoft Entra ID
 

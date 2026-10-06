@@ -25,9 +25,6 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
         }
     ]
     for _, row in plan.table.iterrows():
-        is_last = (
-            int(row["Ordre"]) == plan.visit_count and not plan.return_to_start and plan.end is None
-        )
         points.append(
             {
                 "latitude": float(row["Latitude"]),
@@ -35,8 +32,8 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
                 "label": str(row["Client"]),
                 "map_label": f"{int(row['Ordre'])}. {row['Client']}",
                 "order": str(int(row["Ordre"])),
-                "color": "#2E7D32" if is_last else "#D32F2F",
-                "rgb": [46, 125, 50] if is_last else [211, 47, 47],
+                "color": "#D32F2F",
+                "rgb": [211, 47, 47],
                 "radius": 350,
             }
         )

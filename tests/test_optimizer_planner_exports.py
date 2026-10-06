@@ -139,6 +139,45 @@ def test_planner_prioritizes_the_closest_selected_companies() -> None:
     assert plan.table.iloc[0]["Client"] == "Entreprise proche"
 
 
+def test_planner_keeps_planned_appointments_outside_the_radius_and_when_rebuilt() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["NEAR", "PLANNED", "OTHER"],
+            "client_name": ["Entreprise proche", "Rendez-vous prévu", "Autre entreprise"],
+            "salesperson": ["Morgan"] * 3,
+            "address": ["Adresse proche", "Adresse prévue", "Autre adresse"],
+            "address_2": [pd.NA] * 3,
+            "address_3": [pd.NA] * 3,
+            "postal_code": ["14000", "75000", "14200"],
+            "city": ["Caen", "Paris", "Hérouville-Saint-Clair"],
+            "country": ["France"] * 3,
+            "latitude": [49.184, 48.8566, 49.230],
+            "longitude": [-0.371, 2.3522, -0.300],
+            "full_address": ["Proche", "Prévu", "Autre"],
+        }
+    )
+
+    plan = build_route_plan(
+        clients,
+        StartPoint(49.1829, -0.3707, "Départ"),
+        radius_km=20,
+        max_visits=2,
+        max_duration_hours=None,
+        return_to_start=False,
+        objective="time",
+        required_client_ids=["PLANNED"],
+    )
+
+    assert plan.visit_count == 2
+    assert plan.table.loc[plan.table["Client"] == "Rendez-vous prévu", "Type"].item() == "Client"
+    assert plan.required_client_ids == frozenset({"PLANNED"})
+    assert any("hors du rayon" in warning for warning in plan.warnings)
+
+    near_position = plan.table.index[plan.table["Code client"] == "NEAR"].item()
+    rebuilt = rebuild_route_plan(plan, [near_position])
+    assert "PLANNED" in rebuilt.table["Code client"].tolist()
+
+
 def test_result_can_be_rebuilt_after_a_visit_is_unchecked() -> None:
     clients = pd.DataFrame(
         {
@@ -226,7 +265,7 @@ def test_csv_and_excel_exports_keep_untrusted_values_as_text() -> None:
     workbook = load_workbook(io.BytesIO(excel_bytes(plan)), data_only=False)
     route_sheet = workbook["Tournée"]
     headers = [cell.value for cell in route_sheet[1]]
-    client_column = headers.index("Client") + 1
+    client_column = headers.index("Entreprise") + 1
     city_column = headers.index("Ville") + 1
     address_column = headers.index("Adresse") + 1
     client_cell = route_sheet.cell(row=3, column=client_column)
