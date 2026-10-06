@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 
+import numpy as np
+import pandas as pd
 import pydeck as pdk
 import streamlit as st
 import streamlit.components.v1 as components
@@ -19,15 +21,13 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
             "label": plan.start.label,
             "map_label": "Départ",
             "order": "D",
+            "kind": "route",
             "color": "#1565C0",
             "rgb": [21, 101, 192],
             "radius": 520,
         }
     ]
     for _, row in plan.table.iterrows():
-        is_last = (
-            int(row["Ordre"]) == plan.visit_count and not plan.return_to_start and plan.end is None
-        )
         points.append(
             {
                 "latitude": float(row["Latitude"]),
@@ -35,8 +35,9 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
                 "label": str(row["Client"]),
                 "map_label": f"{int(row['Ordre'])}. {row['Client']}",
                 "order": str(int(row["Ordre"])),
-                "color": "#2E7D32" if is_last else "#D32F2F",
-                "rgb": [46, 125, 50] if is_last else [211, 47, 47],
+                "kind": "route",
+                "color": "#D32F2F",
+                "rgb": [211, 47, 47],
                 "radius": 350,
             }
         )
@@ -48,6 +49,7 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
                 "label": plan.end.label,
                 "map_label": "Arrivée",
                 "order": "A",
+                "kind": "route",
                 "color": "#2E7D32",
                 "rgb": [46, 125, 50],
                 "radius": 520,
@@ -66,6 +68,93 @@ def _map_points(plan: RoutePlan) -> list[dict[str, object]]:
         point["label_anchor"] = anchor
         point["label_baseline"] = baseline
     return points
+
+
+def possibility_points_from_candidates(
+    plan: RoutePlan,
+    candidates: pd.DataFrame,
+    start_client_id: str | None,
+) -> tuple[list[dict[str, object]], int, int, float]:
+    """Classe les entreprises hors tournée selon leur distance directe au départ."""
+    if candidates.empty:
+        return [], 0, 0, 0.0
+
+    route_ids = set(plan.table["Code client"].astype(str))
+    excluded_ids = route_ids | ({str(start_client_id)} if start_client_id else set())
+    points = candidates.copy()
+    points["latitude"] = pd.to_numeric(points["latitude"], errors="coerce")
+    points["longitude"] = pd.to_numeric(points["longitude"], errors="coerce")
+    points = points[
+        points["latitude"].notna()
+        & points["longitude"].notna()
+        & ~points["client_id"].astype(str).isin(excluded_ids)
+    ]
+    if points.empty:
+        return [], 0, 0, 0.0
+
+    route_latitudes = plan.table["Latitude"].astype(float).to_numpy()
+    route_longitudes = plan.table["Longitude"].astype(float).to_numpy()
+    start_latitude = np.radians(plan.start.latitude)
+    start_longitude = np.radians(plan.start.longitude)
+    route_distances = 2 * 6371.0088 * np.arcsin(
+        np.sqrt(
+            np.sin((np.radians(route_latitudes) - start_latitude) / 2) ** 2
+            + np.cos(start_latitude)
+            * np.cos(np.radians(route_latitudes))
+            * np.sin((np.radians(route_longitudes) - start_longitude) / 2) ** 2
+        )
+    )
+    furthest_selected_km = float(route_distances.max())
+
+    latitudes = points["latitude"].astype(float).to_numpy()
+    longitudes = points["longitude"].astype(float).to_numpy()
+    distances = 2 * 6371.0088 * np.arcsin(
+        np.sqrt(
+            np.sin((np.radians(latitudes) - start_latitude) / 2) ** 2
+            + np.cos(start_latitude)
+            * np.cos(np.radians(latitudes))
+            * np.sin((np.radians(longitudes) - start_longitude) / 2) ** 2
+        )
+    )
+    within_selected_range = distances <= furthest_selected_km + 1e-9
+    overlay: list[dict[str, object]] = []
+    details = points[["client_name", "latitude", "longitude"]].itertuples(index=False)
+    for detail, distance, is_nearby in zip(
+        details, distances, within_selected_range, strict=True
+    ):
+        company, latitude, longitude = detail
+        overlay.append(
+            {
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+                "label": str(company),
+                "order": "Possibilité" if is_nearby else "Plus loin",
+                "kind": "possibility",
+                "color": "#FBBF24" if is_nearby else "#22C55E",
+                "rgb": [251, 191, 36] if is_nearby else [34, 197, 94],
+                "radius": 260,
+                "distance_from_start_km": round(float(distance), 1),
+            }
+        )
+    nearby_count = int(within_selected_range.sum())
+    return overlay, nearby_count, len(overlay) - nearby_count, furthest_selected_km
+
+
+def _possibility_layer(points: list[dict[str, object]]) -> pdk.Layer:
+    return pdk.Layer(
+        "ScatterplotLayer",
+        id="possibility-overlay",
+        data=points,
+        get_position="[longitude, latitude]",
+        get_fill_color="rgb",
+        get_radius="radius",
+        radius_min_pixels=5,
+        radius_max_pixels=11,
+        pickable=True,
+        stroked=True,
+        get_line_color=[255, 255, 255],
+        line_width_min_pixels=1,
+    )
 
 
 def _direction_arrows(geometry: list[tuple[float, float]]) -> list[dict[str, object]]:
@@ -121,11 +210,17 @@ def _persistent_label_layer(points: list[dict[str, object]]) -> pdk.Layer:
     )
 
 
-def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
+def render_pydeck_map(
+    plan: RoutePlan,
+    height: int = 560,
+    possibility_points: list[dict[str, object]] | None = None,
+) -> None:
     points = _map_points(plan)
+    possibilities = possibility_points or []
     arrows = _direction_arrows(plan.geometry)
     path = [[longitude, latitude] for latitude, longitude in plan.geometry]
     layers = [
+        *([_possibility_layer(possibilities)] if possibilities else []),
         pdk.Layer(
             "PathLayer",
             data=[{"path": path}],
@@ -169,17 +264,18 @@ def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
             get_text_anchor=String("middle"),
         ),
     ]
-    latitude_span = max(point["latitude"] for point in points) - min(
-        point["latitude"] for point in points
+    all_points = [*points, *possibilities]
+    latitude_span = max(point["latitude"] for point in all_points) - min(
+        point["latitude"] for point in all_points
     )
-    longitude_span = max(point["longitude"] for point in points) - min(
-        point["longitude"] for point in points
+    longitude_span = max(point["longitude"] for point in all_points) - min(
+        point["longitude"] for point in all_points
     )
     largest_span = max(float(latitude_span), float(longitude_span), 0.01)
     zoom = max(3.5, min(14.0, math.log2(360 / largest_span) - 1.6))
     view = pdk.ViewState(
-        latitude=sum(point["latitude"] for point in points) / len(points),
-        longitude=sum(point["longitude"] for point in points) / len(points),
+        latitude=sum(point["latitude"] for point in all_points) / len(all_points),
+        longitude=sum(point["longitude"] for point in all_points) / len(all_points),
         zoom=zoom,
     )
     st.pydeck_chart(
@@ -194,10 +290,16 @@ def render_pydeck_map(plan: RoutePlan, height: int = 560) -> None:
     )
 
 
-def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) -> None:
+def render_azure_map(
+    plan: RoutePlan,
+    subscription_key: str,
+    height: int = 560,
+    possibility_points: list[dict[str, object]] | None = None,
+) -> None:
     points = _map_points(plan)
     payload = {
         "points": points,
+        "possibilityPoints": possibility_points or [],
         "path": [[longitude, latitude] for latitude, longitude in plan.geometry],
         "arrows": _direction_arrows(plan.geometry),
     }
@@ -229,6 +331,9 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
         data.points.forEach(p => source.add(new atlas.data.Feature(
           new atlas.data.Point([p.longitude, p.latitude]), p
         )));
+        data.possibilityPoints.forEach(p => source.add(new atlas.data.Feature(
+          new atlas.data.Point([p.longitude, p.latitude]), p
+        )));
         data.arrows.forEach(a => map.markers.add(new atlas.HtmlMarker({{
           position: [a.longitude, a.latitude],
           htmlContent: `<div style="transform:rotate(${{a.angle}}deg);color:#1565C0;` +
@@ -243,11 +348,11 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
           strokeColor:'#FFFFFF', strokeWidth:2
         }}));
         map.layers.add(new atlas.layer.SymbolLayer(source, 'labels', {{
-          filter:['==',['geometry-type'],'Point'],
+          filter:['all',['==',['geometry-type'],'Point'],['==',['get','kind'],'route']],
           textOptions: {{textField:['get','order'], color:'#FFFFFF', size:12, font:['StandardFont-Bold']}}
         }}));
         map.layers.add(new atlas.layer.SymbolLayer(source, 'company-labels', {{
-          filter:['==',['geometry-type'],'Point'],
+          filter:['all',['==',['geometry-type'],'Point'],['==',['get','kind'],'route']],
           iconOptions: {{image: 'none'}},
           textOptions: {{
             textField:['get','map_label'], color:'#1F2937', size:11,
@@ -270,7 +375,9 @@ def render_azure_map(plan: RoutePlan, subscription_key: str, height: int = 560) 
           }}).open(map);
         }});
         const bounds = atlas.data.BoundingBox.fromPositions([
-          ...data.points.map(p => [p.longitude,p.latitude]), ...data.path
+          ...data.points.map(p => [p.longitude,p.latitude]),
+          ...data.possibilityPoints.map(p => [p.longitude,p.latitude]),
+          ...data.path
         ]);
         map.setCamera({{bounds, padding:55, maxZoom:14}});
       }});
@@ -284,8 +391,14 @@ def render_map(
     subscription_key: str | None,
     height: int = 560,
     renderer: str = "pydeck",
+    possibility_points: list[dict[str, object]] | None = None,
 ) -> None:
     if renderer == "azure" and subscription_key:
-        render_azure_map(plan, subscription_key, height=height)
+        render_azure_map(
+            plan,
+            subscription_key,
+            height=height,
+            possibility_points=possibility_points,
+        )
     else:
-        render_pydeck_map(plan, height=height)
+        render_pydeck_map(plan, height=height, possibility_points=possibility_points)

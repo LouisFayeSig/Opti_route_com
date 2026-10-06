@@ -369,11 +369,7 @@ class AzureMapsClient:
         stop_pixels = [
             self._static_map_pixel(point, map_center, zoom, width, height) for point in stops
         ]
-        colors_by_stop = ["#1565C0"]
-        colors_by_stop.extend(
-            "#2E7D32" if not return_to_start and index == len(stops) - 1 else "#D32F2F"
-            for index in range(1, len(stops))
-        )
+        colors_by_stop = ["#1565C0", *["#D32F2F"] * (len(stops) - 1)]
         draw_stop_labels(image, stop_pixels, labels, colors_by_stop)
         output = io.BytesIO()
         image.save(output, format="PNG")

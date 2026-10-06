@@ -96,6 +96,14 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         radio_labels = [radio.label for radio in app.radio]
         assert "Point de départ" not in radio_labels
         assert "Fin de tournée" not in radio_labels
+
+        generate_button = next(button for button in app.button if button.label == "Générer ma tournée")
+        generate_button.click().run()
+
+        assert not app.exception
+        assert [toggle.label for toggle in app.toggle] == [
+            "Afficher le calque des possibilités"
+        ]
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)

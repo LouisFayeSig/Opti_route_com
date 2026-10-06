@@ -35,7 +35,7 @@ from opti_route.data import (
 )
 from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
-from opti_route.map_view import render_map
+from opti_route.map_view import possibility_points_from_candidates, render_map
 from opti_route.planner import (
     PlanningError,
     RoutePlan,
@@ -521,7 +521,9 @@ def _format_duration(seconds: int) -> str:
     return f"{hours} h {remainder:02d}" if hours else f"{remainder} min"
 
 
-def _render_plan_summary(plan: RoutePlan) -> None:
+def _render_plan_summary(
+    plan: RoutePlan, possibility_points: list[dict[str, object]] | None = None
+) -> None:
     last_company = str(plan.table.iloc[-1]["Client"])
     st.info(
         f"**Départ :** {plan.start.label}  \n"
@@ -540,13 +542,18 @@ def _render_plan_summary(plan: RoutePlan) -> None:
         settings.azure_maps_key,
         height=520,
         renderer=settings.map_renderer,
+        possibility_points=possibility_points,
     )
-    st.markdown(
+    legend = (
         "<span style='color:#1565C0'>●</span> Départ &nbsp;&nbsp; "
-        "<span style='color:#D32F2F'>●</span> Visite &nbsp;&nbsp; "
-        "<span style='color:#2E7D32'>●</span> Dernière visite",
-        unsafe_allow_html=True,
+        "<span style='color:#D32F2F'>●</span> Tournée"
     )
+    if possibility_points:
+        legend += (
+            " &nbsp;&nbsp; <span style='color:#D97706'>●</span> Possibilité dans le périmètre "
+            "&nbsp;&nbsp; <span style='color:#16A34A'>●</span> Plus loin"
+        )
+    st.markdown(legend, unsafe_allow_html=True)
 
 
 def _render_results(
@@ -742,7 +749,11 @@ salesperson_rows = salesperson_rows[
 ].sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
 salesperson_codes = salesperson_rows["salesperson_code"].tolist()
 salesperson_labels = {
-    row.salesperson_code: f"{row.salesperson} · {row.salesperson_code}"
+    row.salesperson_code: (
+        row.salesperson
+        if row.salesperson.strip().casefold() == row.salesperson_code.strip().casefold()
+        else f"{row.salesperson} · {row.salesperson_code}"
+    )
     for row in salesperson_rows.itertuples(index=False)
 }
 if not salesperson_codes:
@@ -760,6 +771,9 @@ source_signature = (
 if st.session_state.get("source_signature") != source_signature:
     st.session_state["source_signature"] = source_signature
     st.session_state.pop("route_plan", None)
+    st.session_state.pop("route_overlay_candidates", None)
+    st.session_state.pop("route_overlay_start_client_id", None)
+    st.session_state.pop("route_overlay_geocode_errors", None)
 
 controls_column, map_column = st.columns([0.36, 0.64], gap="large")
 with controls_column:
@@ -1002,6 +1016,10 @@ with controls_column:
                     + " · ".join(geocode_errors[:3])
                 )
             st.session_state["route_plan"] = plan
+            if authenticated_user.is_admin:
+                st.session_state["route_overlay_candidates"] = assigned_clients.copy()
+                st.session_state["route_overlay_start_client_id"] = start_client_id
+                st.session_state.pop("route_overlay_geocode_errors", None)
         except (PlanningError, ClientDataError, StorageError, ValueError) as exc:
             st.error(str(exc))
         except Exception as exc:
@@ -1021,7 +1039,69 @@ with map_column:
             unsafe_allow_html=True,
         )
     else:
-        _render_plan_summary(plan)
+        possibility_points: list[dict[str, object]] | None = None
+        if authenticated_user.is_admin:
+            show_possibility_layer = st.toggle(
+                "Afficher le calque des possibilités",
+                key=f"possibility_layer_{plan.created_at.isoformat()}",
+                help=(
+                    "Jaune : entreprises situées dans le rayon du point sélectionné le plus "
+                    "éloigné du départ. Vert : entreprises plus éloignées."
+                ),
+            )
+            if show_possibility_layer:
+                overlay_candidates = st.session_state.get(
+                    "route_overlay_candidates", assigned_clients
+                )
+                missing_overlay_coordinates = (
+                    overlay_candidates["latitude"].isna()
+                    | overlay_candidates["longitude"].isna()
+                )
+                if missing_overlay_coordinates.any():
+                    progress_bar = st.progress(
+                        0,
+                        text="Préparation du calque : vérification des coordonnées…",
+                    )
+
+                    def update_overlay_progress(
+                        position: int, total: int, company_name: str
+                    ) -> None:
+                        progress_bar.progress(
+                            position / max(total, 1),
+                            text=f"Calque {position}/{total} · {company_name}",
+                        )
+
+                    overlay_candidates, overlay_geocode_errors = geocode_missing_clients(
+                        overlay_candidates,
+                        azure_client,
+                        GeocodeCache(settings.geocode_cache_path),
+                        progress=update_overlay_progress,
+                    )
+                    progress_bar.empty()
+                    st.session_state["route_overlay_candidates"] = overlay_candidates
+                    st.session_state["route_overlay_geocode_errors"] = overlay_geocode_errors
+                overlay_start_client_id = st.session_state.get(
+                    "route_overlay_start_client_id", start_client_id
+                )
+                (
+                    possibility_points,
+                    nearby_count,
+                    distant_count,
+                    furthest_selected_km,
+                ) = possibility_points_from_candidates(
+                    plan, overlay_candidates, overlay_start_client_id
+                )
+                st.caption(
+                    f"Référence : {furthest_selected_km:.1f} km à vol d'oiseau depuis le départ · "
+                    f"{nearby_count} possibilité(s) en jaune · {distant_count} en vert"
+                )
+                overlay_geocode_errors = st.session_state.get("route_overlay_geocode_errors", [])
+                if overlay_geocode_errors:
+                    st.warning(
+                        f"{len(overlay_geocode_errors)} entreprise(s) ne peuvent pas être "
+                        "affichées dans le calque faute de coordonnées."
+                    )
+        _render_plan_summary(plan, possibility_points=possibility_points)
 
 plan = st.session_state.get("route_plan")
 if plan is not None:

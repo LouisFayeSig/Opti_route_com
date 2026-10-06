@@ -129,17 +129,13 @@ def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600)
 
     stop_points = plan.route_coordinates[:-1] if plan.return_to_start else plan.route_coordinates
     stop_pixels = [pixel(point) for point in stop_points]
-    colors_by_stop = ["#1565C0"]
-    colors_by_stop.extend(
-        "#2E7D32" if not plan.return_to_start and index == len(stop_points) - 1 else "#D32F2F"
-        for index in range(1, len(stop_points))
-    )
+    colors_by_stop = ["#1565C0", *["#D32F2F"] * (len(stop_points) - 1)]
     draw_stop_labels(image, stop_pixels, plan.map_stop_labels, colors_by_stop)
 
     draw.text((padding, 18), f"Tournée · {plan.visit_count} visites", fill="#263238")
     draw.text(
         (padding, height - 30),
-        "Bleu : départ   Rouge : visite   Vert : dernière visite   —   Schéma sans fond cartographique",
+        "Bleu : départ   Rouge : visite   —   Schéma sans fond cartographique",
         fill="#607080",
     )
     output = io.BytesIO()
@@ -176,8 +172,7 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     content.append(
         Paragraph(
             "<font color='#1565C0'>●</font> Départ &nbsp;&nbsp; "
-            "<font color='#D32F2F'>●</font> Visite &nbsp;&nbsp; "
-            "<font color='#2E7D32'>●</font> Dernière visite",
+            "<font color='#D32F2F'>●</font> Visite",
             styles["Normal"],
         )
     )

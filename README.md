@@ -25,6 +25,7 @@ dans [deployment/AZURE.md](deployment/AZURE.md).
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
+- calque administrateur facultatif : entreprises non retenues en jaune dans le périmètre de la tournée et en vert au-delà ;
 - export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
