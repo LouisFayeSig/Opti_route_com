@@ -13,13 +13,13 @@ dans [deployment/AZURE.md](deployment/AZURE.md).
 - séparation des rôles administrateur et utilisateur ;
 - stockage du portefeuille normalisé dans SQLite sans conservation du classeur brut ;
 - choix obligatoire du commercial ;
-- parcours de préparation en quatre étapes : prospects, départ, arrivée et revue ;
-- choix utilisateur du nombre total de visites, entre le nombre de rendez-vous prévus et le maximum administrateur ;
+- parcours de préparation en trois étapes : portefeuille, entreprise de départ et rendez-vous ajoutés, puis revue ;
+- choix utilisateur du nombre total de visites, entre le nombre de rendez-vous ajoutés et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
 - ajout d'un ou plusieurs rendez-vous déjà planifiés : ils sont inclus même hors rayon et conservés lors d'un recalcul ;
 - retrait des seules visites facultatives depuis le résultat avec recalcul complet de la tournée ;
-- départ depuis la position du navigateur ou un client existant, affiché à l'ordre 0 ;
-- choix du retour au départ, de la dernière visite ou d'une adresse d'arrivée spécifique ;
+- départ depuis une entreprise existante, affiché à l'ordre 0 ;
+- fin de tournée à la dernière visite, sans trajet de retour ;
 - cache SQLite des adresses géocodées ;
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
@@ -77,7 +77,7 @@ préférer Entra ID.
 
 Le compte `ADMIN_USERNAME` dispose du panneau **Administration**. Le compte utilisateur ne voit ni
 l'import ni les contrôles des contraintes et peut seulement choisir le commercial, les entreprises,
-le départ et une éventuelle adresse d'arrivée.
+le départ et d'éventuels rendez-vous déjà planifiés.
 
 ### Microsoft Entra ID
 

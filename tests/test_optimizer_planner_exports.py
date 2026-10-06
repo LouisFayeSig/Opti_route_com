@@ -29,6 +29,26 @@ def test_optimizer_visits_each_node_and_returns() -> None:
     assert sorted(route[1:-1]) == [1, 2, 3]
 
 
+def test_optimizer_can_keep_the_nearest_company_as_the_first_stop() -> None:
+    matrix = [
+        [0, 1, 9, 12],
+        [1, 0, 6, 8],
+        [9, 6, 0, 2],
+        [12, 8, 2, 0],
+    ]
+
+    route = optimize_route(
+        matrix,
+        matrix,
+        return_to_start=False,
+        time_limit_seconds=1,
+        prefer_nearest_first=True,
+    )
+
+    assert route[0] == 0
+    assert route[1] == 1
+
+
 def test_planner_builds_route_and_exports() -> None:
     clients = pd.DataFrame(
         {
@@ -60,6 +80,10 @@ def test_planner_builds_route_and_exports() -> None:
     assert plan.route_coordinates[0] == plan.route_coordinates[-1]
     assert plan.total_distance_m > 0
     assert plan.itinerary_table()["Étape"].tolist() == ["Départ", "1", "2", "3", "Retour"]
+    review = plan.review_table()
+    assert review["Ordre"].tolist() == [0, 1, 2, 3]
+    assert review["Entreprise"].iloc[0] == "Départ · Caen"
+    assert "Retour" not in review["Entreprise"].tolist()
     assert csv_bytes(plan).startswith(b"\xef\xbb\xbf")
     assert "Départ" in csv_bytes(plan).decode("utf-8-sig")
     assert excel_bytes(plan).startswith(b"PK")
@@ -104,7 +128,7 @@ def test_planner_keeps_a_specific_arrival_after_all_visits() -> None:
     assert plan.end == arrival
     assert plan.route_coordinates[-1] == (arrival.latitude, arrival.longitude)
     assert plan.itinerary_table().iloc[-1]["Étape"] == "Arrivée"
-    assert plan.itinerary_table().iloc[-1]["Client"] == "Agence"
+    assert plan.itinerary_table().iloc[-1]["Entreprise"] == "Agence"
 
 
 def test_planner_prioritizes_the_closest_selected_companies() -> None:
@@ -198,7 +222,7 @@ def test_planner_rejects_more_planned_appointments_than_allowed() -> None:
             required_client_ids=["A", "B"],
         )
     except PlanningError as exc:
-        assert "rendez-vous prévus" in str(exc)
+        assert "rendez-vous planifiés" in str(exc)
     else:
         raise AssertionError("La limite de rendez-vous prévus doit être contrôlée.")
 
@@ -290,16 +314,16 @@ def test_csv_and_excel_exports_keep_untrusted_values_as_text() -> None:
     workbook = load_workbook(io.BytesIO(excel_bytes(plan)), data_only=False)
     route_sheet = workbook["Tournée"]
     headers = [cell.value for cell in route_sheet[1]]
-    client_column = headers.index("Client") + 1
+    company_column = headers.index("Entreprise") + 1
     city_column = headers.index("Ville") + 1
     address_column = headers.index("Adresse") + 1
-    client_cell = route_sheet.cell(row=3, column=client_column)
+    company_cell = route_sheet.cell(row=3, column=company_column)
     city_cell = route_sheet.cell(row=3, column=city_column)
     address_cell = route_sheet.cell(row=3, column=address_column)
-    assert client_cell.value.startswith("'=HYPERLINK")
+    assert company_cell.value.startswith("'=HYPERLINK")
     assert city_cell.value.startswith("'@SUM")
     assert address_cell.value.startswith("'+Adresse")
-    assert client_cell.data_type == city_cell.data_type == address_cell.data_type == "s"
+    assert company_cell.data_type == city_cell.data_type == address_cell.data_type == "s"
 
     summary_sheet = workbook["Synthèse"]
     assert summary_sheet["B2"].value == "'=Point de départ"

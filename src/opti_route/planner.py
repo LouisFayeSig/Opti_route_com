@@ -39,6 +39,7 @@ class RoutePlan:
     omitted_for_duration: int = 0
     warnings: list[str] = field(default_factory=list)
     map_image: bytes | None = None
+    prefer_nearest_first: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
 
     @property
@@ -57,12 +58,53 @@ class RoutePlan:
             labels.append(f"A · {self.end.label}")
         return labels
 
+    def review_table(self) -> pd.DataFrame:
+        """Retourne le tableau affiché dans la revue de tournée, départ inclus.
+
+        Le retour éventuel est volontairement absent : la revue représente les visites que
+        l'utilisateur peut conserver ou retirer, et constitue également la référence du PDF.
+        """
+        visits = self.table[
+            [
+                "Ordre",
+                "Client",
+                "Ville",
+                "Adresse",
+                "Distance",
+                "Temps",
+                "Distance cumulée",
+                "Temps cumulé",
+                "Rendez-vous prévu",
+            ]
+        ].rename(
+            columns={
+                "Client": "Entreprise",
+                "Rendez-vous prévu": "Rendez-vous planifié",
+            }
+        )
+        start = pd.DataFrame(
+            [
+                {
+                    "Ordre": 0,
+                    "Entreprise": f"Départ · {self.start.label}",
+                    "Ville": "",
+                    "Adresse": self.start.address or self.start.label,
+                    "Distance": 0.0,
+                    "Temps": 0.0,
+                    "Distance cumulée": 0.0,
+                    "Temps cumulé": 0.0,
+                    "Rendez-vous planifié": False,
+                }
+            ]
+        )
+        return pd.concat([start, visits], ignore_index=True)
+
     def itinerary_table(self) -> pd.DataFrame:
         """Ajoute le départ et, le cas échéant, le retour au détail des visites."""
         rows: list[dict[str, object]] = [
             {
                 "Étape": "Départ",
-                "Client": self.start.label,
+                "Entreprise": self.start.label,
                 "Ville": "",
                 "Adresse": self.start.address or self.start.label,
                 "Distance": 0.0,
@@ -75,7 +117,7 @@ class RoutePlan:
             rows.append(
                 {
                     "Étape": str(int(visit["Ordre"])),
-                    "Client": visit["Client"],
+                    "Entreprise": visit["Client"],
                     "Ville": visit["Ville"],
                     "Adresse": visit["Adresse"],
                     "Distance": visit["Distance"],
@@ -93,7 +135,7 @@ class RoutePlan:
             rows.append(
                 {
                     "Étape": "Retour" if is_return else "Arrivée",
-                    "Client": destination.label,
+                    "Entreprise": destination.label,
                     "Ville": "",
                     "Adresse": destination.address or destination.label,
                     "Distance": (self.total_distance_m - previous_distance_m) / 1000,
@@ -117,6 +159,7 @@ def build_route_plan(
     excluded_client_id: str | None = None,
     end: StartPoint | None = None,
     required_client_ids: Collection[str] | None = None,
+    prefer_nearest_first: bool = False,
 ) -> RoutePlan:
     if end is not None:
         return_to_start = False
@@ -134,11 +177,11 @@ def build_route_plan(
     missing_required_ids = required_ids.difference(available_required_ids)
     if missing_required_ids:
         raise PlanningError(
-            "Un rendez-vous prévu n'a pas de coordonnées exploitables ou correspond au point de départ."
+            "Un rendez-vous planifié n'a pas de coordonnées exploitables ou correspond au point de départ."
         )
     if len(required_rows) > max_visits:
         raise PlanningError(
-            f"{len(required_rows)} rendez-vous prévus dépassent le maximum de {max_visits} visites."
+            f"{len(required_rows)} rendez-vous planifiés dépassent le maximum de {max_visits} visites."
         )
 
     candidates = clients_within_radius(
@@ -147,7 +190,7 @@ def build_route_plan(
     candidate_count = len(candidates)
     if candidates.empty and required_rows.empty:
         raise PlanningError(
-            f"Aucun client géocodé n'a été trouvé dans un rayon de {radius_km:g} km."
+            f"Aucune entreprise géocodée n'a été trouvée dans un rayon de {radius_km:g} km."
         )
 
     optional_candidates = candidates[
@@ -163,7 +206,7 @@ def build_route_plan(
     )
     if required_outside_radius:
         warnings.append(
-            f"{required_outside_radius} rendez-vous prévu(s) hors du rayon ont été inclus."
+            f"{required_outside_radius} rendez-vous planifié(s) hors du rayon ont été inclus."
         )
 
     node_coordinates = [(start.latitude, start.longitude)] + list(
@@ -196,6 +239,7 @@ def build_route_plan(
             round(max_duration_hours * 3600) if max_duration_hours is not None else None
         ),
         end_node=end_node,
+        prefer_nearest_first=prefer_nearest_first,
     )
     visited_nodes = [node for node in ordered_nodes if node != 0 and node != end_node]
     if not visited_nodes:
@@ -273,6 +317,7 @@ def build_route_plan(
         omitted_for_duration=len(selected) - len(visited_nodes),
         warnings=warnings,
         map_image=map_image,
+        prefer_nearest_first=prefer_nearest_first,
     )
 
 
@@ -319,4 +364,5 @@ def rebuild_route_plan(
         azure_client=azure_client,
         end=plan.end,
         required_client_ids=plan.required_client_ids,
+        prefer_nearest_first=plan.prefer_nearest_first,
     )

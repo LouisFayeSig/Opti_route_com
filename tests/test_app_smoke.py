@@ -88,12 +88,14 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         assert app.subheader[0].value == "Préparer la tournée"
         assert labels[-2:] == [
             "Commercial",
-            "Client de départ",
+            "Entreprise de départ",
         ]
         assert [multiselect.label for multiselect in app.multiselect] == [
-            "Rendez-vous déjà planifiés (facultatif)"
+            "Autres rendez-vous déjà planifiés"
         ]
-        assert [radio.label for radio in app.radio][-2:] == ["Point de départ", "Fin de tournée"]
+        radio_labels = [radio.label for radio in app.radio]
+        assert "Point de départ" not in radio_labels
+        assert "Fin de tournée" not in radio_labels
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)

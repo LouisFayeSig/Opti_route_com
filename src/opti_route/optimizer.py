@@ -53,6 +53,7 @@ def optimize_route(
     max_duration_seconds: int | None = None,
     time_limit_seconds: int = 2,
     end_node: int | None = None,
+    prefer_nearest_first: bool = False,
 ) -> list[int]:
     if len(durations) != len(distances) or not durations:
         raise OptimizationError("Les matrices de tournée sont invalides.")
@@ -116,6 +117,14 @@ def optimize_route(
         if node == end_node:
             continue
         routing.AddDisjunction([manager.NodeToIndex(node)], penalty)
+
+    if prefer_nearest_first:
+        eligible_first_stops = [node for node in range(1, size) if node != end_node]
+        if eligible_first_stops:
+            nearest_stop = min(eligible_first_stops, key=lambda node: (costs[0][node], node))
+            # Conserver un premier arrêt intuitif : la recherche optimise ensuite le reste de la
+            # tournée, mais ne remplace pas l'entreprise la plus proche du point de départ.
+            routing.NextVar(routing.Start(0)).SetValue(manager.NodeToIndex(nearest_stop))
 
     parameters = pywrapcp.DefaultRoutingSearchParameters()
     parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC

@@ -71,22 +71,20 @@ def excel_bytes(plan: RoutePlan) -> bytes:
             {
                 "Indicateur": [
                     "Départ",
-                    "Arrivée",
+                    "Fin de tournée",
                     "Nombre de visites",
                     "Distance totale (km)",
                     "Durée totale (min)",
-                    "Retour au départ",
                     "Source des estimations",
                 ],
                 "Valeur": [
                     plan.start.label,
                     plan.end.label
                     if plan.end is not None
-                    else (plan.start.label if plan.return_to_start else "Dernier client"),
+                    else "Dernière entreprise visitée",
                     plan.visit_count,
                     round(plan.total_distance_m / 1000, 1),
                     round(plan.total_duration_s / 60),
-                    "Oui" if plan.return_to_start else "Non",
                     plan.provider,
                 ],
             }
@@ -141,7 +139,7 @@ def _fallback_route_image(plan: RoutePlan, width: int = 1200, height: int = 600)
     draw.text((padding, 18), f"Tournée · {plan.visit_count} visites", fill="#263238")
     draw.text(
         (padding, height - 30),
-        "Bleu : départ   Rouge : visite   Vert : arrivée   —   Schéma sans fond cartographique",
+        "Bleu : départ   Rouge : visite   Vert : dernière visite   —   Schéma sans fond cartographique",
         fill="#607080",
     )
     output = io.BytesIO()
@@ -165,7 +163,8 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     content.append(
         Paragraph(
             f"{plan.visit_count} visites — {plan.total_distance_m / 1000:.1f} km — "
-            f"{plan.total_duration_s / 60:.0f} min — {plan.provider}",
+            f"{plan.total_duration_s / 60:.0f} min — {plan.provider}. "
+            "La tournée se termine après la dernière visite.",
             styles["Normal"],
         )
     )
@@ -178,25 +177,40 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
         Paragraph(
             "<font color='#1565C0'>●</font> Départ &nbsp;&nbsp; "
             "<font color='#D32F2F'>●</font> Visite &nbsp;&nbsp; "
-            "<font color='#2E7D32'>●</font> Arrivée",
+            "<font color='#2E7D32'>●</font> Dernière visite",
             styles["Normal"],
         )
     )
     content.append(Spacer(1, 8 * mm))
-    export = _export_table(plan)
+    export = plan.review_table()
     columns = [
-        "Étape",
-        "Client",
+        "Ordre",
+        "Entreprise",
         "Ville",
         "Adresse",
-        "Temps depuis le précédent (min)",
+        "Distance",
+        "Temps",
+        "Distance cumulée",
+        "Temps cumulé",
+        "Rendez-vous planifié",
+    ]
+    labels = [
+        "Ordre",
+        "Entreprise",
+        "Ville",
+        "Adresse",
+        "Distance",
+        "Temps",
+        "Cumul (km)",
+        "Cumul temps",
+        "Rendez-vous",
     ]
     header_style = styles["BodyText"].clone("PdfTableHeader")
     header_style.fontName = "Helvetica-Bold"
     header_style.fontSize = 7
     header_style.leading = 8.5
     header_style.textColor = colors.white
-    rows = [[Paragraph(escape(column), header_style) for column in columns]]
+    rows = [[Paragraph(escape(label), header_style) for label in labels]]
     cell_style = styles["BodyText"].clone("PdfTableCell")
     cell_style.fontName = "Helvetica"
     cell_style.fontSize = 7
@@ -204,16 +218,20 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
     for _, row in export[columns].iterrows():
         rows.append(
             [
-                str(row["Étape"]),
-                Paragraph(escape(str(row["Client"])), cell_style),
+                str(int(row["Ordre"])),
+                Paragraph(escape(str(row["Entreprise"])), cell_style),
                 Paragraph(escape(str(row["Ville"])), cell_style),
                 Paragraph(escape(str(row["Adresse"])), cell_style),
-                f"{float(row['Temps depuis le précédent (min)']):.0f}",
+                f"{float(row['Distance']):.1f} km",
+                f"{float(row['Temps']):.0f} min",
+                f"{float(row['Distance cumulée']):.1f}",
+                f"{float(row['Temps cumulé']):.0f} min",
+                "Oui" if bool(row["Rendez-vous planifié"]) else "—",
             ]
         )
     table = Table(
         rows,
-        colWidths=[15 * mm, 55 * mm, 35 * mm, 105 * mm, 35 * mm],
+        colWidths=[12 * mm, 43 * mm, 27 * mm, 67 * mm, 22 * mm, 20 * mm, 23 * mm, 24 * mm, 26 * mm],
         repeatRows=1,
     )
     table.setStyle(
@@ -225,9 +243,9 @@ def pdf_bytes(plan: RoutePlan) -> bytes:
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDE3EA")),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F7FA")]),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
