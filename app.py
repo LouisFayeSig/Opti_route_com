@@ -996,8 +996,8 @@ with controls_column:
                 options=list(range(minimum_visits, route_configuration.max_visits + 1)),
                 value=default_requested_visits,
                 help=(
-                    "Les rendez-vous ajoutés sont compris dans ce total. Les entreprises les plus proches "
-                    "du départ sont retenues en priorité."
+                    "6 visites sont proposées par défaut. Les rendez-vous ajoutés sont compris dans ce "
+                    "total ; les entreprises les plus proches du départ sont retenues en priorité."
                 ),
             )
 
