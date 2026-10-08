@@ -9,6 +9,7 @@ from opti_route.data import (
     ClientDataError,
     list_sheet_names,
     load_clients,
+    preferred_portfolio_sheet_index,
     standardize_clients,
     suggest_column_mapping,
     validate_uploaded_file,
@@ -152,6 +153,11 @@ def test_reads_workbook_sheet_and_custom_header_row() -> None:
         header_row=1,
     )
     assert clients["client_name"].tolist() == ["Alpha"]
+
+
+def test_prefers_the_final_listing_client_sheet() -> None:
+    assert preferred_portfolio_sheet_index(["Liste_client caen", "Listing client"]) == 1
+    assert preferred_portfolio_sheet_index(["Portefeuille"]) == 0
 
 
 def test_upload_validation_rejects_fake_office_archives() -> None:

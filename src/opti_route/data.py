@@ -217,6 +217,15 @@ def list_sheet_names(
     return excel_file.sheet_names
 
 
+def preferred_portfolio_sheet_index(sheet_names: list[str]) -> int:
+    """Choisit la feuille normalisee du portefeuille quand elle est presente."""
+
+    for index, sheet_name in enumerate(sheet_names):
+        if normalize_column_name(sheet_name) == "listing_client":
+            return index
+    return 0
+
+
 def suggest_column_mapping(columns: pd.Index) -> dict[str, str]:
     normalized = {normalize_column_name(column): str(column) for column in columns}
     mapping: dict[str, str] = {}

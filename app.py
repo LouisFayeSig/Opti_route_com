@@ -28,6 +28,7 @@ from opti_route.data import (
     ALIASES,
     ClientDataError,
     list_sheet_names,
+    preferred_portfolio_sheet_index,
     read_tabular,
     standardize_clients,
     suggest_column_mapping,
@@ -165,12 +166,14 @@ def _admin_import_panel(
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()[:12]
     suffix = Path(uploaded.name).suffix.casefold()
+    default_sheet_index = preferred_portfolio_sheet_index(sheets)
     sheet_column, header_column = st.columns(2)
     sheet = sheet_column.selectbox(
         "Feuille",
         sheets,
+        index=default_sheet_index,
         disabled=suffix == ".csv",
-        key=f"admin_sheet_{file_hash}",
+        key=f"admin_sheet_v2_{file_hash}",
     )
     header_line = header_column.number_input(
         "Ligne contenant les en-têtes",
