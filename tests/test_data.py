@@ -9,6 +9,7 @@ from opti_route.data import (
     ClientDataError,
     list_sheet_names,
     load_clients,
+    preferred_portfolio_sheet_index,
     standardize_clients,
     suggest_column_mapping,
     validate_uploaded_file,
@@ -56,6 +57,44 @@ def test_detects_atc_code_and_falls_back_to_salesperson_for_legacy_files() -> No
 
     assert standardize_clients(with_code).loc[0, "salesperson_code"] == "ATC-001"
     assert standardize_clients(legacy).loc[0, "salesperson_code"] == "Alice"
+
+
+def test_recognizes_final_listing_contract_and_propagates_manager_scope() -> None:
+    raw = pd.DataFrame(
+        {
+            "rai_soc": ["Alpha", "Beta", "Gamma"],
+            "RUE": ["1 rue A", "2 rue B", "3 rue C"],
+            "cp": ["14000", "14000", "76000"],
+            "ville": ["Caen", "Caen", "Rouen"],
+            "Nom": ["Alice", "Alice", "Bob"],
+            "Code Agence": ["14", "14", "76"],
+            "code ATC": ["01", "01", "01"],
+            "N+1": [pd.NA, "Directrice Alice", "Directeur Bob"],
+            "Email Nom (E)": ["alice@example.test", pd.NA, "bob@example.test"],
+            "Email N+1 (H)": [pd.NA, "manager.a@example.test", "manager.b@example.test"],
+        }
+    )
+
+    mapping = suggest_column_mapping(raw.columns)
+    clients = standardize_clients(raw)
+
+    assert mapping == {
+        "client_name": "rai_soc",
+        "salesperson_code": "code ATC",
+        "salesperson": "Nom",
+        "salesperson_email": "Email Nom (E)",
+        "director_name": "N+1",
+        "director_email": "Email N+1 (H)",
+        "agency": "Code Agence",
+        "address": "RUE",
+        "postal_code": "cp",
+        "city": "ville",
+    }
+    assert clients.loc[0, "full_address"] == "1 rue A, 14000, Caen, France"
+    assert clients.loc[0, "salesperson_email"] == "alice@example.test"
+    assert clients.loc[0, "director_name"] == "Directrice Alice"
+    assert clients.loc[0, "director_email"] == "manager.a@example.test"
+    assert clients.loc[2, "director_email"] == "manager.b@example.test"
 
 
 def test_manual_mapping_accepts_unknown_column_names() -> None:
@@ -114,6 +153,11 @@ def test_reads_workbook_sheet_and_custom_header_row() -> None:
         header_row=1,
     )
     assert clients["client_name"].tolist() == ["Alpha"]
+
+
+def test_prefers_the_final_listing_client_sheet() -> None:
+    assert preferred_portfolio_sheet_index(["Liste_client caen", "Listing client"]) == 1
+    assert preferred_portfolio_sheet_index(["Portefeuille"]) == 0
 
 
 def test_upload_validation_rejects_fake_office_archives() -> None:

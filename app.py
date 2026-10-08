@@ -28,6 +28,7 @@ from opti_route.data import (
     ALIASES,
     ClientDataError,
     list_sheet_names,
+    preferred_portfolio_sheet_index,
     read_tabular,
     standardize_clients,
     suggest_column_mapping,
@@ -114,6 +115,9 @@ FIELD_LABELS = {
     "client_name": "Nom de l'entreprise",
     "salesperson_code": "Code ATC",
     "salesperson": "Commercial",
+    "salesperson_email": "E-mail du commercial",
+    "director_name": "N+1 / directeur",
+    "director_email": "E-mail du directeur",
     "agency": "Agence",
     "agency_address": "Adresse agence",
     "address": "Adresse / rue",
@@ -162,12 +166,14 @@ def _admin_import_panel(
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()[:12]
     suffix = Path(uploaded.name).suffix.casefold()
+    default_sheet_index = preferred_portfolio_sheet_index(sheets)
     sheet_column, header_column = st.columns(2)
     sheet = sheet_column.selectbox(
         "Feuille",
         sheets,
+        index=default_sheet_index,
         disabled=suffix == ".csv",
-        key=f"admin_sheet_{file_hash}",
+        key=f"admin_sheet_v2_{file_hash}",
     )
     header_line = header_column.number_input(
         "Ligne contenant les en-têtes",
@@ -227,8 +233,17 @@ def _admin_import_panel(
 
     geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
     commercial_count = clients["salesperson"].nunique()
+    atc_scopes = clients[
+        ["salesperson_code", "salesperson", "salesperson_email", "director_email"]
+    ].drop_duplicates()
+    atc_with_email = int(atc_scopes["salesperson_email"].notna().sum())
+    atc_with_director = int(atc_scopes["director_email"].notna().sum())
     st.caption(
         f"{len(clients)} entreprises · {commercial_count} commerciaux · {geocoded} déjà géocodées"
+    )
+    st.caption(
+        f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
+        f"et {atc_with_director}/{len(atc_scopes)} rattaches a un directeur."
     )
     if st.button(
         "Enregistrer ce portefeuille",
@@ -316,6 +331,9 @@ def _admin_access_panel(
                     "Object ID Entra": profile.principal_id,
                     "Rôle attendu": "ATC" if profile.role == ROLE_ATC else "Directeur",
                     "Code ATC": profile.atc_code or "",
+                    "E-mail ATC": profile.atc_email or "",
+                    "Commercial ATC": profile.atc_name or "",
+                    "E-mail directeur": profile.director_email or "",
                     "Agences": ", ".join(profile.agencies),
                     "Modifié le": profile.updated_at.replace("T", " "),
                 }
@@ -348,15 +366,28 @@ def _admin_access_panel(
         key="access_role",
     )
 
-    atc_rows = pd.DataFrame(columns=["salesperson_code", "salesperson"])
+    atc_rows = pd.DataFrame(
+        columns=["salesperson_code", "salesperson", "salesperson_email"]
+    )
+    director_rows = pd.DataFrame(columns=["director_name", "director_email"])
     agencies: list[str] = []
     if clients is not None:
         atc_rows = (
-            clients[["salesperson_code", "salesperson"]]
+            clients.reindex(
+                columns=["salesperson_code", "salesperson", "salesperson_email"]
+            )
             .fillna("")
             .astype(str)
             .drop_duplicates()
             .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+        )
+        director_rows = (
+            clients.reindex(columns=["director_name", "director_email"])
+            .dropna(subset=["director_email"])
+            .fillna("")
+            .astype(str)
+            .drop_duplicates()
+            .sort_values(["director_name", "director_email"], key=lambda values: values.str.casefold())
         )
         agencies = sorted(
             {
@@ -368,6 +399,9 @@ def _admin_access_panel(
         )
 
     selected_atc_code: str | None = None
+    selected_atc_email: str | None = None
+    selected_atc_name: str | None = None
+    selected_director_email: str | None = None
     selected_agencies: tuple[str, ...] = ()
     if role_label == "ATC":
         atc_options = atc_rows.index.tolist()
@@ -382,18 +416,40 @@ def _admin_access_panel(
                 key="access_atc_scope",
             )
             selected_atc_code = str(atc_rows.at[selected_atc_index, "salesperson_code"])
+            selected_atc_email = (
+                str(atc_rows.at[selected_atc_index, "salesperson_email"]).strip() or None
+            )
+            selected_atc_name = str(
+                atc_rows.at[selected_atc_index, "salesperson"]
+            ).strip() or None
         else:
             st.warning("Importez d'abord un portefeuille contenant des codes ATC.")
     else:
-        selected_agencies = tuple(
-            st.multiselect(
-                "Agences autorisées",
-                agencies,
-                key="access_agency_scope",
+        if not director_rows.empty:
+            director_options = director_rows.index.tolist()
+            selected_director_index = st.selectbox(
+                "Directeur et e-mail",
+                director_options,
+                format_func=lambda index: (
+                    f"{director_rows.at[index, 'director_name']} · "
+                    f"{director_rows.at[index, 'director_email']}"
+                ),
+                key="access_director_scope",
             )
-        )
-        if not agencies:
-            st.warning("Importez d'abord un portefeuille contenant des agences.")
+            selected_director_email = str(
+                director_rows.at[selected_director_index, "director_email"]
+            ).strip() or None
+            st.caption("Le directeur verra les portefeuilles associes a cet e-mail N+1.")
+        if director_rows.empty:
+            selected_agencies = tuple(
+                st.multiselect(
+                    "Agences autorisées (portefeuille historique)",
+                    agencies,
+                    key="access_agency_scope",
+                )
+            )
+            if not agencies:
+                st.warning("Importez d'abord un portefeuille contenant des agences.")
 
     if st.button(
         "Enregistrer l'habilitation",
@@ -408,6 +464,9 @@ def _admin_access_panel(
                     display_name=display_name,
                     role=ROLE_ATC if role_label == "ATC" else ROLE_DIRECTOR,
                     atc_code=selected_atc_code,
+                    atc_email=selected_atc_email,
+                    atc_name=selected_atc_name,
+                    director_email=selected_director_email,
                     agencies=selected_agencies,
                 ),
                 updated_by=user.display_name,
@@ -869,11 +928,26 @@ with controls_column:
         )
         selected_start_index = st.selectbox(
             "Entreprise de départ",
-            appointment_options.index,
-            format_func=lambda index: appointment_options.at[index, "display"],
+            [None, *appointment_options.index.tolist()],
+            format_func=lambda index: (
+                "— Choisir une entreprise —"
+                if index is None
+                else appointment_options.at[index, "display"]
+            ),
             key=f"start_client_{selection_identifier}",
         )
-        start_client_id = str(appointment_options.at[selected_start_index, "client_id"])
+        st.caption("ou")
+        worksite_address = st.text_input(
+            "Adresse du rendez-vous chantier",
+            placeholder="14 rue …, 14000 Caen",
+            key=f"worksite_address_{selection_identifier}",
+            help="Saisissez l'adresse complète du lieu de rendez-vous lorsque le départ ne se fait pas depuis une entreprise.",
+        ).strip()
+        start_client_id = (
+            str(appointment_options.at[selected_start_index, "client_id"])
+            if selected_start_index is not None
+            else None
+        )
 
     with st.container(border=True):
         st.markdown(
@@ -914,10 +988,13 @@ with controls_column:
             )
             requested_visits = route_configuration.max_visits
         else:
+            default_requested_visits = max(
+                minimum_visits, min(6, route_configuration.max_visits)
+            )
             requested_visits = st.select_slider(
                 "Nombre total de visites",
                 options=list(range(minimum_visits, route_configuration.max_visits + 1)),
-                value=max(minimum_visits, min(6, route_configuration.max_visits)),
+                value=default_requested_visits,
                 help=(
                     "6 visites sont proposées par défaut. Les rendez-vous ajoutés sont compris dans ce "
                     "total ; les entreprises les plus proches du départ sont retenues en priorité."
@@ -934,6 +1011,14 @@ with controls_column:
     generate = st.button("Générer ma tournée", type="primary", use_container_width=True)
     if generate:
         try:
+            if start_client_id is not None and worksite_address:
+                raise PlanningError(
+                    "Choisissez soit une entreprise de départ, soit une adresse de rendez-vous chantier."
+                )
+            if start_client_id is None and not worksite_address:
+                raise PlanningError(
+                    "Choisissez une entreprise de départ ou renseignez une adresse de rendez-vous chantier."
+                )
             if clients_for_route.empty:
                 raise PlanningError("Sélectionnez au moins une entreprise ou ajoutez un rendez-vous planifié.")
             if len(planned_appointment_ids) > route_configuration.max_visits:
@@ -950,13 +1035,30 @@ with controls_column:
                 )
 
             clients_to_geocode = clients_for_route.copy()
+            start_reference_id: str
             if start_client_id is not None:
                 start_source = assigned_clients[
                     assigned_clients["client_id"].astype(str) == start_client_id
                 ]
-                clients_to_geocode = pd.concat(
-                    [clients_to_geocode, start_source], ignore_index=True
-                ).drop_duplicates(subset=["client_id"], keep="first")
+                start_reference_id = start_client_id
+            else:
+                start_reference_id = "worksite-" + hashlib.sha1(
+                    worksite_address.casefold().encode()
+                ).hexdigest()[:12]
+                start_source = pd.DataFrame(
+                    [
+                        {
+                            "client_id": start_reference_id,
+                            "client_name": "Rendez-vous chantier",
+                            "full_address": worksite_address,
+                            "latitude": pd.NA,
+                            "longitude": pd.NA,
+                        }
+                    ]
+                )
+            clients_to_geocode = pd.concat(
+                [clients_to_geocode, start_source], ignore_index=True
+            ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
                 clients_to_geocode,
                 azure_client,
@@ -966,25 +1068,32 @@ with controls_column:
             progress_bar.empty()
 
             start_client = enriched_clients[
-                enriched_clients["client_id"].astype(str) == start_client_id
+                enriched_clients["client_id"].astype(str) == start_reference_id
             ]
             if start_client.empty or start_client[["latitude", "longitude"]].isna().any(axis=None):
+                start_description = (
+                    "L'entreprise choisie comme point de départ"
+                    if start_client_id is not None
+                    else "L'adresse du rendez-vous chantier"
+                )
                 raise PlanningError(
-                    "L'entreprise choisie comme point de départ n'a pas pu être géocodée."
+                    f"{start_description} n'a pas pu être géocodée."
                 )
             row = start_client.iloc[0]
             start = StartPoint(
                 float(row["latitude"]),
                 float(row["longitude"]),
-                f"Entreprise · {row['client_name']}",
+                (
+                    f"Entreprise · {row['client_name']}"
+                    if start_client_id is not None
+                    else "Rendez-vous chantier"
+                ),
                 str(row.get("full_address", "")) or None,
             )
 
-            visitable_clients = enriched_clients
-            if start_client_id is not None:
-                visitable_clients = visitable_clients[
-                    visitable_clients["client_id"].astype(str) != start_client_id
-                ]
+            visitable_clients = enriched_clients[
+                enriched_clients["client_id"].astype(str) != start_reference_id
+            ]
             if visitable_clients.dropna(subset=["latitude", "longitude"]).empty:
                 error_details = " · ".join(geocode_errors[:3])
                 raise PlanningError(

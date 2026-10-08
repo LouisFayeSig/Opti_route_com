@@ -193,6 +193,21 @@ class AzureBlobAppStore:
                 if document.get("atc_code") is not None
                 else None
             ),
+            atc_email=(
+                str(document["atc_email"])
+                if document.get("atc_email") is not None
+                else None
+            ),
+            atc_name=(
+                str(document["atc_name"])
+                if document.get("atc_name") is not None
+                else None
+            ),
+            director_email=(
+                str(document["director_email"])
+                if document.get("director_email") is not None
+                else None
+            ),
             agencies=tuple(str(value) for value in agencies_value),
             updated_at=str(document.get("updated_at", "")),
             updated_by=str(document.get("updated_by", "")),
@@ -239,6 +254,9 @@ class AzureBlobAppStore:
             role=profile.role,
             atc_code=profile.atc_code,
             agencies=profile.agencies,
+            atc_email=profile.atc_email,
+            atc_name=profile.atc_name,
+            director_email=profile.director_email,
             updated_at=datetime.now(UTC).isoformat(timespec="seconds"),
             updated_by=updated_by.strip()[:255] or "Administrateur",
         )

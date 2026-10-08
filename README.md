@@ -205,6 +205,27 @@ commercial est utilisé comme code de repli lorsqu'aucune colonne dédiée n'est
 sont facultatives : les lignes qui n'en possèdent pas sont géocodées via Azure Maps et mises en cache
 dans `.cache/geocoding.sqlite3`.
 
+### Portefeuille final `Liste_client.xlsx`
+
+La feuille **Listing client** est reconnue sans correspondance manuelle :
+
+| Colonne source | Utilisation |
+|---|---|
+| `rai_soc` | nom du client |
+| `RUE`, `cp`, `ville` | adresse a geocoder |
+| `Nom`, `code ATC`, `Email Nom (E)` | commercial et son perimetre |
+| `Code Agence` | reference regionale de l'agence |
+| `N+1`, `Email N+1 (H)` | directeur et portefeuille de ses commerciaux |
+
+Le N+1 et son e-mail peuvent etre renseignes une seule fois par commercial : ils sont
+propages a toutes les lignes de son portefeuille a l'import. Dans **Administration >
+Habilitations**, l'administrateur associe toujours l'Object ID Entra a un collaborateur,
+puis selectionne son e-mail ATC ou directeur issu du portefeuille. Le role signe par
+Entra reste obligatoire ; l'e-mail importe sert a definir le perimetre, pas a authentifier
+un utilisateur. Un ATC ne voit que les clients de son e-mail professionnel et un directeur
+voit les clients des commerciaux rattaches a son e-mail N+1. L'ancien filtrage par agence
+reste disponible pour les portefeuilles historiques qui ne contiennent pas ces e-mails.
+
 ## Tests
 
 ```powershell
