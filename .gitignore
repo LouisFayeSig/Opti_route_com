@@ -12,3 +12,5 @@ __pycache__/
 *.utf16.bak
 dist/
 build/
+deployment/utilisateurs_microsoft_entra_opti_route.csv
+deployment/demande_microsoft_entra_opti_route.md
