@@ -2,6 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from opti_route.storage import AppStore
@@ -66,11 +67,15 @@ def test_password_mode_accepts_configured_credentials(monkeypatch) -> None:
 
 
 def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
+    st.cache_data.clear()
+    st.cache_resource.clear()
     monkeypatch.setenv("AUTH_MODE", "password")
     monkeypatch.setenv("AUTH_USERNAME", "collaborateur-test")
     monkeypatch.setenv("AUTH_PASSWORD", "mot-de-passe-test-long")
     monkeypatch.setenv("ADMIN_USERNAME", "administrateur-test")
     monkeypatch.setenv("ADMIN_PASSWORD", "mot-de-passe-admin-test-long")
+    monkeypatch.setenv("AZURE_MAPS_SUBSCRIPTION_KEY", "")
+    monkeypatch.setenv("AZURE_MAPS_KEY", "")
     storage_path = Path(".cache") / f"app-flow-test-{uuid4().hex}.sqlite3"
     store = AppStore(storage_path)
     store.save_clients(_portfolio(), source_name="portfolio.xlsx", imported_by="Test")
@@ -93,10 +98,20 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         assert [multiselect.label for multiselect in app.multiselect] == [
             "Autres rendez-vous déjà planifiés"
         ]
+        assert "Adresse du rendez-vous chantier" in [
+            text_input.label for text_input in app.text_input
+        ]
+        requested_visits = next(
+            slider
+            for slider in app.select_slider
+            if slider.label == "Nombre total de visites"
+        )
+        assert requested_visits.value == 6
         radio_labels = [radio.label for radio in app.radio]
         assert "Point de départ" not in radio_labels
         assert "Fin de tournée" not in radio_labels
 
+        app.selectbox[-1].select(0).run()
         generate_button = next(button for button in app.button if button.label == "Générer ma tournée")
         generate_button.click().run()
 
@@ -110,18 +125,27 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
 
 
 def test_admin_account_can_access_portfolio_import(monkeypatch) -> None:
+    st.cache_data.clear()
+    st.cache_resource.clear()
     monkeypatch.setenv("AUTH_MODE", "password")
     monkeypatch.setenv("AUTH_USERNAME", "collaborateur-test")
     monkeypatch.setenv("AUTH_PASSWORD", "mot-de-passe-test-long")
     monkeypatch.setenv("ADMIN_USERNAME", "administrateur-test")
     monkeypatch.setenv("ADMIN_PASSWORD", "mot-de-passe-admin-test-long")
+    storage_path = Path(".cache") / f"app-import-test-{uuid4().hex}.sqlite3"
+    AppStore(storage_path)
+    monkeypatch.setenv("APP_STORAGE_PATH", str(storage_path.resolve()))
     app_path = Path(__file__).parents[1] / "app.py"
-    app = AppTest.from_file(str(app_path), default_timeout=30).run()
 
-    app.text_input[0].input("administrateur-test")
-    app.text_input[1].input("mot-de-passe-admin-test-long")
-    app.button[0].click().run()
+    try:
+        app = AppTest.from_file(str(app_path), default_timeout=30).run()
+        app.text_input[0].input("administrateur-test")
+        app.text_input[1].input("mot-de-passe-admin-test-long")
+        app.button[0].click().run()
 
-    assert not app.exception
-    assert any("Administrateur" in caption.value for caption in app.caption)
-    assert len(app.file_uploader) == 1
+        assert not app.exception
+        assert any("Administrateur" in caption.value for caption in app.caption)
+        assert len(app.file_uploader) == 1
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)

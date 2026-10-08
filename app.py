@@ -928,11 +928,26 @@ with controls_column:
         )
         selected_start_index = st.selectbox(
             "Entreprise de départ",
-            appointment_options.index,
-            format_func=lambda index: appointment_options.at[index, "display"],
+            [None, *appointment_options.index.tolist()],
+            format_func=lambda index: (
+                "— Choisir une entreprise —"
+                if index is None
+                else appointment_options.at[index, "display"]
+            ),
             key=f"start_client_{selection_identifier}",
         )
-        start_client_id = str(appointment_options.at[selected_start_index, "client_id"])
+        st.caption("ou")
+        worksite_address = st.text_input(
+            "Adresse du rendez-vous chantier",
+            placeholder="14 rue …, 14000 Caen",
+            key=f"worksite_address_{selection_identifier}",
+            help="Saisissez l'adresse complète du lieu de rendez-vous lorsque le départ ne se fait pas depuis une entreprise.",
+        ).strip()
+        start_client_id = (
+            str(appointment_options.at[selected_start_index, "client_id"])
+            if selected_start_index is not None
+            else None
+        )
 
     with st.container(border=True):
         st.markdown(
@@ -973,10 +988,13 @@ with controls_column:
             )
             requested_visits = route_configuration.max_visits
         else:
+            default_requested_visits = max(
+                minimum_visits, min(6, route_configuration.max_visits)
+            )
             requested_visits = st.select_slider(
                 "Nombre total de visites",
                 options=list(range(minimum_visits, route_configuration.max_visits + 1)),
-                value=route_configuration.max_visits,
+                value=default_requested_visits,
                 help=(
                     "Les rendez-vous ajoutés sont compris dans ce total. Les entreprises les plus proches "
                     "du départ sont retenues en priorité."
@@ -993,6 +1011,14 @@ with controls_column:
     generate = st.button("Générer ma tournée", type="primary", use_container_width=True)
     if generate:
         try:
+            if start_client_id is not None and worksite_address:
+                raise PlanningError(
+                    "Choisissez soit une entreprise de départ, soit une adresse de rendez-vous chantier."
+                )
+            if start_client_id is None and not worksite_address:
+                raise PlanningError(
+                    "Choisissez une entreprise de départ ou renseignez une adresse de rendez-vous chantier."
+                )
             if clients_for_route.empty:
                 raise PlanningError("Sélectionnez au moins une entreprise ou ajoutez un rendez-vous planifié.")
             if len(planned_appointment_ids) > route_configuration.max_visits:
@@ -1009,13 +1035,30 @@ with controls_column:
                 )
 
             clients_to_geocode = clients_for_route.copy()
+            start_reference_id: str
             if start_client_id is not None:
                 start_source = assigned_clients[
                     assigned_clients["client_id"].astype(str) == start_client_id
                 ]
-                clients_to_geocode = pd.concat(
-                    [clients_to_geocode, start_source], ignore_index=True
-                ).drop_duplicates(subset=["client_id"], keep="first")
+                start_reference_id = start_client_id
+            else:
+                start_reference_id = "worksite-" + hashlib.sha1(
+                    worksite_address.casefold().encode()
+                ).hexdigest()[:12]
+                start_source = pd.DataFrame(
+                    [
+                        {
+                            "client_id": start_reference_id,
+                            "client_name": "Rendez-vous chantier",
+                            "full_address": worksite_address,
+                            "latitude": pd.NA,
+                            "longitude": pd.NA,
+                        }
+                    ]
+                )
+            clients_to_geocode = pd.concat(
+                [clients_to_geocode, start_source], ignore_index=True
+            ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
                 clients_to_geocode,
                 azure_client,
@@ -1025,25 +1068,32 @@ with controls_column:
             progress_bar.empty()
 
             start_client = enriched_clients[
-                enriched_clients["client_id"].astype(str) == start_client_id
+                enriched_clients["client_id"].astype(str) == start_reference_id
             ]
             if start_client.empty or start_client[["latitude", "longitude"]].isna().any(axis=None):
+                start_description = (
+                    "L'entreprise choisie comme point de départ"
+                    if start_client_id is not None
+                    else "L'adresse du rendez-vous chantier"
+                )
                 raise PlanningError(
-                    "L'entreprise choisie comme point de départ n'a pas pu être géocodée."
+                    f"{start_description} n'a pas pu être géocodée."
                 )
             row = start_client.iloc[0]
             start = StartPoint(
                 float(row["latitude"]),
                 float(row["longitude"]),
-                f"Entreprise · {row['client_name']}",
+                (
+                    f"Entreprise · {row['client_name']}"
+                    if start_client_id is not None
+                    else "Rendez-vous chantier"
+                ),
                 str(row.get("full_address", "")) or None,
             )
 
-            visitable_clients = enriched_clients
-            if start_client_id is not None:
-                visitable_clients = visitable_clients[
-                    visitable_clients["client_id"].astype(str) != start_client_id
-                ]
+            visitable_clients = enriched_clients[
+                enriched_clients["client_id"].astype(str) != start_reference_id
+            ]
             if visitable_clients.dropna(subset=["latitude", "longitude"]).empty:
                 error_details = " · ".join(geocode_errors[:3])
                 raise PlanningError(
