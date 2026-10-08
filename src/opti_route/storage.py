@@ -48,6 +48,9 @@ class UserAccessProfile:
     role: str
     atc_code: str | None = None
     agencies: tuple[str, ...] = ()
+    atc_email: str | None = None
+    atc_name: str | None = None
+    director_email: str | None = None
     updated_at: str = ""
     updated_by: str = ""
 
@@ -56,6 +59,9 @@ class UserAccessProfile:
         display_name = self.display_name.strip()
         role = self.role.strip().casefold()
         atc_code = (self.atc_code or "").strip() or None
+        atc_email = (self.atc_email or "").strip().casefold() or None
+        atc_name = (self.atc_name or "").strip() or None
+        director_email = (self.director_email or "").strip().casefold() or None
         agencies = tuple(
             dict.fromkeys(value.strip() for value in self.agencies if value.strip())
         )
@@ -63,9 +69,9 @@ class UserAccessProfile:
             raise StorageError("L'identifiant Entra est obligatoire et limite a 255 caracteres.")
         if role not in {"atc", "director"}:
             raise StorageError("Une habilitation doit avoir le role ATC ou directeur.")
-        if role == "atc" and not atc_code:
+        if role == "atc" and not (atc_code or atc_email):
             raise StorageError("Un code ATC est obligatoire pour le role ATC.")
-        if role == "director" and not agencies:
+        if role == "director" and not (director_email or agencies):
             raise StorageError("Au moins une agence est obligatoire pour le role directeur.")
         return UserAccessProfile(
             principal_id=principal_id,
@@ -73,6 +79,9 @@ class UserAccessProfile:
             role=role,
             atc_code=atc_code if role == "atc" else None,
             agencies=agencies if role == "director" else (),
+            atc_email=atc_email if role == "atc" else None,
+            atc_name=atc_name if role == "atc" else None,
+            director_email=director_email if role == "director" else None,
             updated_at=self.updated_at,
             updated_by=self.updated_by,
         )
@@ -83,6 +92,9 @@ _CLIENT_COLUMNS = (
     "client_name",
     "salesperson_code",
     "salesperson",
+    "salesperson_email",
+    "director_name",
+    "director_email",
     "agency",
     "agency_address",
     "address",
@@ -94,6 +106,15 @@ _CLIENT_COLUMNS = (
     "latitude",
     "longitude",
     "full_address",
+)
+
+_REQUIRED_CLIENT_COLUMNS = tuple(
+    column
+    for column in _CLIENT_COLUMNS
+    if column not in {"salesperson_email", "director_name", "director_email"}
+)
+_OPTIONAL_CLIENT_COLUMNS = tuple(
+    column for column in _CLIENT_COLUMNS if column not in _REQUIRED_CLIENT_COLUMNS
 )
 
 
@@ -108,9 +129,12 @@ def serialize_portfolio(
     clients = clients.copy()
     if "salesperson_code" not in clients.columns and "salesperson" in clients.columns:
         clients["salesperson_code"] = clients["salesperson"]
-    missing_columns = set(_CLIENT_COLUMNS).difference(clients.columns)
+    missing_columns = set(_REQUIRED_CLIENT_COLUMNS).difference(clients.columns)
     if missing_columns:
         raise StorageError("Le portefeuille normalisé est incomplet.")
+    for column in _OPTIONAL_CLIENT_COLUMNS:
+        if column not in clients.columns:
+            clients[column] = pd.NA
     if len(clients) > 70_000:
         raise StorageError("Le portefeuille dépasse la limite de 70 000 lignes.")
 
@@ -143,7 +167,11 @@ def deserialize_portfolio(payload: str, metadata: PortfolioMetadata) -> pd.DataF
         records = json.loads(payload)
     except json.JSONDecodeError as exc:
         raise StorageError("Le portefeuille stocké n'est pas lisible.") from exc
-    clients = pd.DataFrame.from_records(records, columns=_CLIENT_COLUMNS)
+    clients = pd.DataFrame.from_records(records)
+    for column in _CLIENT_COLUMNS:
+        if column not in clients.columns:
+            clients[column] = pd.NA
+    clients = clients.loc[:, _CLIENT_COLUMNS]
     clients["salesperson_code"] = (
         clients["salesperson_code"]
         .fillna(clients["salesperson"])
@@ -253,12 +281,22 @@ class AppStore:
                         display_name TEXT NOT NULL,
                         role TEXT NOT NULL CHECK (role IN ('atc', 'director')),
                         atc_code TEXT,
+                        atc_email TEXT,
+                        atc_name TEXT,
+                        director_email TEXT,
                         agencies TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         updated_by TEXT NOT NULL
                     )
                     """
                 )
+                existing_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(access_profiles)").fetchall()
+                }
+                for column in ("atc_email", "atc_name", "director_email"):
+                    if column not in existing_columns:
+                        connection.execute(f"ALTER TABLE access_profiles ADD COLUMN {column} TEXT")
         except sqlite3.Error as exc:
             raise StorageError(f"Initialisation du stockage impossible : {exc}") from exc
         self._set_private_permissions(self.path, 0o600)
@@ -365,8 +403,8 @@ class AppStore:
             with self._connection() as connection:
                 rows = connection.execute(
                     """
-                    SELECT principal_id, display_name, role, atc_code, agencies,
-                           updated_at, updated_by
+                    SELECT principal_id, display_name, role, atc_code, atc_email, atc_name,
+                           director_email, agencies, updated_at, updated_by
                     FROM access_profiles
                     ORDER BY display_name COLLATE NOCASE, principal_id
                     """
@@ -386,8 +424,8 @@ class AppStore:
             with self._connection() as connection:
                 row = connection.execute(
                     """
-                    SELECT principal_id, display_name, role, atc_code, agencies,
-                           updated_at, updated_by
+                    SELECT principal_id, display_name, role, atc_code, atc_email, atc_name,
+                           director_email, agencies, updated_at, updated_by
                     FROM access_profiles WHERE principal_id = ? COLLATE NOCASE
                     """,
                     (normalized_id,),
@@ -399,7 +437,7 @@ class AppStore:
     @staticmethod
     def _access_profile_from_row(row: tuple[object, ...]) -> UserAccessProfile:
         try:
-            parsed_agencies = json.loads(str(row[4]))
+            parsed_agencies = json.loads(str(row[7]))
             if not isinstance(parsed_agencies, list):
                 raise TypeError
             agencies = tuple(str(value) for value in parsed_agencies)
@@ -410,9 +448,12 @@ class AppStore:
             display_name=str(row[1]),
             role=str(row[2]),
             atc_code=str(row[3]) if row[3] is not None else None,
+            atc_email=str(row[4]) if row[4] is not None else None,
+            atc_name=str(row[5]) if row[5] is not None else None,
+            director_email=str(row[6]) if row[6] is not None else None,
             agencies=agencies,
-            updated_at=str(row[5]),
-            updated_by=str(row[6]),
+            updated_at=str(row[8]),
+            updated_by=str(row[9]),
         ).validated()
 
     def save_access_profile(
@@ -425,6 +466,9 @@ class AppStore:
             role=profile.role,
             atc_code=profile.atc_code,
             agencies=profile.agencies,
+            atc_email=profile.atc_email,
+            atc_name=profile.atc_name,
+            director_email=profile.director_email,
             updated_at=datetime.now(UTC).isoformat(timespec="seconds"),
             updated_by=updated_by.strip()[:255] or "Administrateur",
         )
@@ -433,13 +477,16 @@ class AppStore:
                 connection.execute(
                     """
                     INSERT INTO access_profiles (
-                        principal_id, display_name, role, atc_code, agencies,
-                        updated_at, updated_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        principal_id, display_name, role, atc_code, atc_email,
+                        atc_name, director_email, agencies, updated_at, updated_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(principal_id) DO UPDATE SET
                         display_name = excluded.display_name,
                         role = excluded.role,
                         atc_code = excluded.atc_code,
+                        atc_email = excluded.atc_email,
+                        atc_name = excluded.atc_name,
+                        director_email = excluded.director_email,
                         agencies = excluded.agencies,
                         updated_at = excluded.updated_at,
                         updated_by = excluded.updated_by
@@ -449,6 +496,9 @@ class AppStore:
                         stored_profile.display_name,
                         stored_profile.role,
                         stored_profile.atc_code,
+                        stored_profile.atc_email,
+                        stored_profile.atc_name,
+                        stored_profile.director_email,
                         json.dumps(stored_profile.agencies, ensure_ascii=False),
                         stored_profile.updated_at,
                         stored_profile.updated_by,

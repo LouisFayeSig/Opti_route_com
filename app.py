@@ -114,6 +114,9 @@ FIELD_LABELS = {
     "client_name": "Nom de l'entreprise",
     "salesperson_code": "Code ATC",
     "salesperson": "Commercial",
+    "salesperson_email": "E-mail du commercial",
+    "director_name": "N+1 / directeur",
+    "director_email": "E-mail du directeur",
     "agency": "Agence",
     "agency_address": "Adresse agence",
     "address": "Adresse / rue",
@@ -227,8 +230,17 @@ def _admin_import_panel(
 
     geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
     commercial_count = clients["salesperson"].nunique()
+    atc_scopes = clients[
+        ["salesperson_code", "salesperson", "salesperson_email", "director_email"]
+    ].drop_duplicates()
+    atc_with_email = int(atc_scopes["salesperson_email"].notna().sum())
+    atc_with_director = int(atc_scopes["director_email"].notna().sum())
     st.caption(
         f"{len(clients)} entreprises · {commercial_count} commerciaux · {geocoded} déjà géocodées"
+    )
+    st.caption(
+        f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
+        f"et {atc_with_director}/{len(atc_scopes)} rattaches a un directeur."
     )
     if st.button(
         "Enregistrer ce portefeuille",
@@ -316,6 +328,9 @@ def _admin_access_panel(
                     "Object ID Entra": profile.principal_id,
                     "Rôle attendu": "ATC" if profile.role == ROLE_ATC else "Directeur",
                     "Code ATC": profile.atc_code or "",
+                    "E-mail ATC": profile.atc_email or "",
+                    "Commercial ATC": profile.atc_name or "",
+                    "E-mail directeur": profile.director_email or "",
                     "Agences": ", ".join(profile.agencies),
                     "Modifié le": profile.updated_at.replace("T", " "),
                 }
@@ -348,15 +363,28 @@ def _admin_access_panel(
         key="access_role",
     )
 
-    atc_rows = pd.DataFrame(columns=["salesperson_code", "salesperson"])
+    atc_rows = pd.DataFrame(
+        columns=["salesperson_code", "salesperson", "salesperson_email"]
+    )
+    director_rows = pd.DataFrame(columns=["director_name", "director_email"])
     agencies: list[str] = []
     if clients is not None:
         atc_rows = (
-            clients[["salesperson_code", "salesperson"]]
+            clients.reindex(
+                columns=["salesperson_code", "salesperson", "salesperson_email"]
+            )
             .fillna("")
             .astype(str)
             .drop_duplicates()
             .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+        )
+        director_rows = (
+            clients.reindex(columns=["director_name", "director_email"])
+            .dropna(subset=["director_email"])
+            .fillna("")
+            .astype(str)
+            .drop_duplicates()
+            .sort_values(["director_name", "director_email"], key=lambda values: values.str.casefold())
         )
         agencies = sorted(
             {
@@ -368,6 +396,9 @@ def _admin_access_panel(
         )
 
     selected_atc_code: str | None = None
+    selected_atc_email: str | None = None
+    selected_atc_name: str | None = None
+    selected_director_email: str | None = None
     selected_agencies: tuple[str, ...] = ()
     if role_label == "ATC":
         atc_options = atc_rows.index.tolist()
@@ -382,18 +413,40 @@ def _admin_access_panel(
                 key="access_atc_scope",
             )
             selected_atc_code = str(atc_rows.at[selected_atc_index, "salesperson_code"])
+            selected_atc_email = (
+                str(atc_rows.at[selected_atc_index, "salesperson_email"]).strip() or None
+            )
+            selected_atc_name = str(
+                atc_rows.at[selected_atc_index, "salesperson"]
+            ).strip() or None
         else:
             st.warning("Importez d'abord un portefeuille contenant des codes ATC.")
     else:
-        selected_agencies = tuple(
-            st.multiselect(
-                "Agences autorisées",
-                agencies,
-                key="access_agency_scope",
+        if not director_rows.empty:
+            director_options = director_rows.index.tolist()
+            selected_director_index = st.selectbox(
+                "Directeur et e-mail",
+                director_options,
+                format_func=lambda index: (
+                    f"{director_rows.at[index, 'director_name']} · "
+                    f"{director_rows.at[index, 'director_email']}"
+                ),
+                key="access_director_scope",
             )
-        )
-        if not agencies:
-            st.warning("Importez d'abord un portefeuille contenant des agences.")
+            selected_director_email = str(
+                director_rows.at[selected_director_index, "director_email"]
+            ).strip() or None
+            st.caption("Le directeur verra les portefeuilles associes a cet e-mail N+1.")
+        if director_rows.empty:
+            selected_agencies = tuple(
+                st.multiselect(
+                    "Agences autorisées (portefeuille historique)",
+                    agencies,
+                    key="access_agency_scope",
+                )
+            )
+            if not agencies:
+                st.warning("Importez d'abord un portefeuille contenant des agences.")
 
     if st.button(
         "Enregistrer l'habilitation",
@@ -408,6 +461,9 @@ def _admin_access_panel(
                     display_name=display_name,
                     role=ROLE_ATC if role_label == "ATC" else ROLE_DIRECTOR,
                     atc_code=selected_atc_code,
+                    atc_email=selected_atc_email,
+                    atc_name=selected_atc_name,
+                    director_email=selected_director_email,
                     agencies=selected_agencies,
                 ),
                 updated_by=user.display_name,

@@ -84,9 +84,34 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "representant",
         "nom",
     ),
+    "salesperson_email": (
+        "salesperson_email",
+        "email_commercial",
+        "email_atc",
+        "email_nom_e",
+        "email_nom",
+    ),
+    "director_name": (
+        "director_name",
+        "nom_directeur",
+        "directeur",
+        "manager",
+        "responsable_n_1",
+        "n_1",
+        "n1",
+    ),
+    "director_email": (
+        "director_email",
+        "email_directeur",
+        "email_manager",
+        "email_n_1_h",
+        "email_n_1",
+    ),
     "agency": (
         "agency",
         "agence",
+        "code_agence",
+        "code_region",
         "nom_agence",
         "agence_reference",
         "agence_de_reference",
@@ -206,6 +231,39 @@ def suggest_column_mapping(columns: pd.Index) -> dict[str, str]:
     return mapping
 
 
+def _fill_sales_hierarchy(clients: pd.DataFrame) -> None:
+    """Propage les donnees collaborateur/N+1 renseignees une fois par ATC.
+
+    Le fichier de portefeuille peut ne renseigner le manager que sur une seule
+    ligne client. Le code ATC seul n'est pas toujours unique dans les exports
+    historiques ; le nom du commercial fait donc partie de la cle de regroupement.
+    """
+
+    hierarchy_columns = ["salesperson_email", "director_name", "director_email"]
+    for column in hierarchy_columns:
+        clients[column] = clients[column].replace("", pd.NA)
+
+    group_columns = ["salesperson_code", "salesperson"]
+    grouped = clients.groupby(group_columns, dropna=False)
+    for column in hierarchy_columns:
+        conflicting_groups = grouped[column].agg(
+            lambda values: values.dropna().astype(str).str.casefold().nunique() > 1
+        )
+        if conflicting_groups.any():
+            code, salesperson = conflicting_groups[conflicting_groups].index[0]
+            raise ClientDataError(
+                "Le commercial "
+                f"{salesperson} (code ATC {code}) est associe a plusieurs valeurs pour "
+                f"{column}. Corrigez le fichier avant l'import."
+            )
+
+    # ffill/bfill permet de renseigner toutes les lignes, quel que soit
+    # l'emplacement de la ligne qui porte le N+1 dans le portefeuille.
+    clients[hierarchy_columns] = grouped[hierarchy_columns].transform(
+        lambda values: values.ffill().bfill()
+    )
+
+
 def standardize_clients(
     raw: pd.DataFrame, column_mapping: dict[str, str | None] | None = None
 ) -> pd.DataFrame:
@@ -251,6 +309,9 @@ def standardize_clients(
         "client_name",
         "salesperson_code",
         "salesperson",
+        "salesperson_email",
+        "director_name",
+        "director_email",
         "agency",
         "agency_address",
         "address",
@@ -262,6 +323,8 @@ def standardize_clients(
     ]
     for column in text_columns:
         clients[column] = clients[column].astype("string").str.strip()
+
+    _fill_sales_hierarchy(clients)
 
     generated_ids = pd.Series(
         [f"ADRESSE-{position + 1}" for position in range(len(clients))],

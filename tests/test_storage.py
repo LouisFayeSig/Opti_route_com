@@ -106,6 +106,28 @@ def test_access_profiles_are_persistent_and_revocable(store_path: Path) -> None:
     assert store.load_access_profile("oid-direction") is None
 
 
+def test_access_profile_persists_imported_email_scope(store_path: Path) -> None:
+    store = AppStore(store_path)
+    profile = store.save_access_profile(
+        UserAccessProfile(
+            principal_id="OID-ATC",
+            display_name="Alice",
+            role="atc",
+            atc_code="01",
+            atc_email="Alice@Example.Test",
+            atc_name="Alice",
+        ),
+        updated_by="Admin",
+    )
+
+    loaded = store.load_access_profile("oid-atc")
+
+    assert loaded == profile
+    assert loaded is not None
+    assert loaded.atc_email == "alice@example.test"
+    assert loaded.atc_name == "Alice"
+
+
 def test_access_profile_requires_a_scope_matching_its_role(store_path: Path) -> None:
     store = AppStore(store_path)
 
