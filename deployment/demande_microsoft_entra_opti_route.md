@@ -18,9 +18,8 @@ ainsi qu'une colonne a completer avec leur **Object ID Entra**.
    (*Accounts in this organizational directory only*).
 2. Configurer une plateforme **Web** et les URI de redirection :
    - pilote local : `http://localhost:8501/oauth2callback` ;
-   - production : `https://<URL-PRODUCTION>/oauth2callback`.
-3. Creer un secret client. Sa valeur doit etre transmise par canal securise ; elle ne doit pas etre
-   envoyee par e-mail ni ajoutee au depot Git.
+   - production : `https://optiroutecom-gjub52oavwrfithbhbe4da.streamlit.app/oauth2callback`.
+3. Creer un secret client.
 4. Definir les App Roles suivants :
 
 | Valeur technique | Libelle | Perimetre applicatif |
@@ -57,7 +56,7 @@ L'attribution de plusieurs roles a un meme compte est volontairement refusee.
 - **3** administrateurs ;
 - **34** directeurs ;
 - **70** ATC identifies par e-mail ;
-- **7** entrees ATC incompletes, a identifier avant attribution.
+- **7** entrees ATC incompletes, a identifier plus tard.
 
 ### Comptes ATC sans e-mail dans le portefeuille
 

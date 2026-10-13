@@ -580,6 +580,12 @@ def _format_duration(seconds: int) -> str:
     return f"{hours} h {remainder:02d}" if hours else f"{remainder} min"
 
 
+def _clear_selectbox_value(widget_key: str) -> None:
+    """Efface un choix de liste via un callback exécuté avant le prochain rendu."""
+
+    st.session_state[widget_key] = None
+
+
 def _render_plan_summary(
     plan: RoutePlan, possibility_points: list[dict[str, object]] | None = None
 ) -> None:
@@ -796,26 +802,43 @@ except (AccessDeniedError, StorageError) as exc:
 
 scoped_clients = authorized_portfolio.clients
 salesperson_rows = (
-    scoped_clients[["salesperson_code", "salesperson"]]
+    scoped_clients.reindex(
+        columns=["salesperson_code", "salesperson", "salesperson_email"]
+    )
     .fillna("")
     .astype(str)
-    .drop_duplicates(subset=["salesperson_code"], keep="first")
 )
 salesperson_rows = salesperson_rows[
     salesperson_rows["salesperson_code"].str.strip().ne("")
     & salesperson_rows["salesperson"].str.strip().ne("")
     & salesperson_rows["salesperson"].ne("Tous")
-].sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
-salesperson_codes = salesperson_rows["salesperson_code"].tolist()
+].copy()
+salesperson_rows["salesperson_email"] = (
+    salesperson_rows["salesperson_email"].str.strip().str.casefold()
+)
+salesperson_rows["salesperson_key"] = salesperson_rows["salesperson_email"]
+missing_salesperson_email = salesperson_rows["salesperson_key"].eq("")
+salesperson_rows.loc[missing_salesperson_email, "salesperson_key"] = (
+    "code:"
+    + salesperson_rows.loc[missing_salesperson_email, "salesperson_code"].str.strip().str.casefold()
+    + "|name:"
+    + salesperson_rows.loc[missing_salesperson_email, "salesperson"].str.strip().str.casefold()
+)
+salesperson_rows = (
+    salesperson_rows.drop_duplicates(subset=["salesperson_key"], keep="first")
+    .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
+    .reset_index(drop=True)
+)
+salesperson_keys = salesperson_rows["salesperson_key"].tolist()
 salesperson_labels = {
-    row.salesperson_code: (
+    row.salesperson_key: (
         row.salesperson
         if row.salesperson.strip().casefold() == row.salesperson_code.strip().casefold()
         else f"{row.salesperson} · {row.salesperson_code}"
     )
     for row in salesperson_rows.itertuples(index=False)
 }
-if not salesperson_codes:
+if not salesperson_keys:
     st.error(
         "Le portefeuille actif ne contient aucun commercial exploitable. "
         "L'administrateur doit importer un fichier corrigé."
@@ -844,10 +867,10 @@ with controls_column:
             unsafe_allow_html=True,
         )
         st.caption("Choisissez les entreprises à intégrer à votre tournée.")
-        active_salesperson_code = st.selectbox(
+        active_salesperson_key = st.selectbox(
             "Commercial",
-            salesperson_codes,
-            format_func=lambda code: salesperson_labels.get(code, code),
+            salesperson_keys,
+            format_func=lambda key: salesperson_labels.get(key, key),
             disabled=authenticated_user.is_atc,
             help=(
                 "Votre portefeuille est imposé par votre habilitation."
@@ -855,13 +878,35 @@ with controls_column:
                 else "Vous pouvez préparer une tournée pour un commercial de votre périmètre."
             ),
         )
-        assigned_clients = scoped_clients[
-            scoped_clients["salesperson_code"].astype(str) == active_salesperson_code
-        ].copy()
+        active_salesperson = salesperson_rows.loc[
+            salesperson_rows["salesperson_key"].eq(active_salesperson_key)
+        ].iloc[0]
+        active_salesperson_email = str(active_salesperson["salesperson_email"]).strip()
+        if active_salesperson_email:
+            assigned_clients = scoped_clients[
+                scoped_clients["salesperson_email"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.casefold()
+                .eq(active_salesperson_email)
+            ].copy()
+        else:
+            assigned_clients = scoped_clients[
+                scoped_clients["salesperson_code"].astype(str).eq(
+                    str(active_salesperson["salesperson_code"])
+                )
+                & scoped_clients["salesperson"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.casefold()
+                .eq(str(active_salesperson["salesperson"]).strip().casefold())
+            ].copy()
         st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
 
         selection_identifier = hashlib.sha1(
-            f"{source_signature}|{active_salesperson_code}".encode()
+            f"{source_signature}|{active_salesperson_key}".encode()
         ).hexdigest()[:12]
         selection_default_key = f"selection_default_{selection_identifier}"
         selection_version_key = f"selection_version_{selection_identifier}"
@@ -926,6 +971,7 @@ with controls_column:
             '<div class="opti-step-title opti-step-start">2. Choisir l\'entreprise de départ</div>',
             unsafe_allow_html=True,
         )
+        start_client_key = f"start_client_{selection_identifier}"
         selected_start_index = st.selectbox(
             "Entreprise de départ",
             [None, *appointment_options.index.tolist()],
@@ -934,8 +980,15 @@ with controls_column:
                 if index is None
                 else appointment_options.at[index, "display"]
             ),
-            key=f"start_client_{selection_identifier}",
+            key=start_client_key,
         )
+        if selected_start_index is not None:
+            st.button(
+                "Retirer l'entreprise de départ",
+                key=f"clear_start_client_{selection_identifier}",
+                on_click=_clear_selectbox_value,
+                args=(start_client_key,),
+            )
         st.caption("ou")
         worksite_address = st.text_input(
             "Adresse du rendez-vous chantier",

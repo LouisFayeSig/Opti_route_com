@@ -29,6 +29,39 @@ def _portfolio() -> pd.DataFrame:
     )
 
 
+def _portfolio_with_shared_atc_code() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "client_id": ["A1", "A2", "M1", "M2"],
+            "client_name": ["Antoine 1", "Antoine 2", "Mathieu 1", "Mathieu 2"],
+            "salesperson_code": ["79", "79", "79", "79"],
+            "salesperson": [
+                "Antoine BELLUAU",
+                "Antoine BELLUAU",
+                "Mathieu DUBREUIL",
+                "Mathieu DUBREUIL",
+            ],
+            "salesperson_email": [
+                "a.belluau@example.test",
+                "a.belluau@example.test",
+                "m.dubreuil@example.test",
+                "m.dubreuil@example.test",
+            ],
+            "agency": ["Poitiers"] * 4,
+            "agency_address": ["1 rue du Test, 86000 Poitiers"] * 4,
+            "address": ["1 rue du Test"] * 4,
+            "address_2": [pd.NA] * 4,
+            "address_3": [pd.NA] * 4,
+            "postal_code": ["86000"] * 4,
+            "city": ["Poitiers"] * 4,
+            "country": ["France"] * 4,
+            "latitude": [46.58, 46.581, 46.582, 46.583],
+            "longitude": [0.34, 0.341, 0.342, 0.343],
+            "full_address": ["1 rue du Test, 86000 Poitiers"] * 4,
+        }
+    )
+
+
 def test_streamlit_page_loads_without_exception(monkeypatch) -> None:
     monkeypatch.setenv("AUTH_MODE", "none")
     app_path = Path(__file__).parents[1] / "app.py"
@@ -112,6 +145,15 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         assert "Fin de tournée" not in radio_labels
 
         app.selectbox[-1].select(0).run()
+        clear_start_button = next(
+            button
+            for button in app.button
+            if button.label == "Retirer l'entreprise de départ"
+        )
+        clear_start_button.click().run()
+        assert app.selectbox[-1].value is None
+
+        app.selectbox[-1].select(0).run()
         generate_button = next(button for button in app.button if button.label == "Générer ma tournée")
         generate_button.click().run()
 
@@ -119,6 +161,48 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         assert [toggle.label for toggle in app.toggle] == [
             "Afficher le calque des possibilités"
         ]
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
+
+
+def test_salesperson_selector_separates_shared_atc_codes(monkeypatch) -> None:
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    monkeypatch.setenv("AUTH_MODE", "password")
+    monkeypatch.setenv("AUTH_USERNAME", "collaborateur-test")
+    monkeypatch.setenv("AUTH_PASSWORD", "mot-de-passe-test-long")
+    monkeypatch.setenv("ADMIN_USERNAME", "administrateur-test")
+    monkeypatch.setenv("ADMIN_PASSWORD", "mot-de-passe-admin-test-long")
+    storage_path = Path(".cache") / f"shared-atc-code-test-{uuid4().hex}.sqlite3"
+    store = AppStore(storage_path)
+    store.save_clients(
+        _portfolio_with_shared_atc_code(),
+        source_name="portfolio.xlsx",
+        imported_by="Test",
+    )
+    monkeypatch.setenv("APP_STORAGE_PATH", str(storage_path.resolve()))
+    app_path = Path(__file__).parents[1] / "app.py"
+
+    try:
+        app = AppTest.from_file(str(app_path), default_timeout=30).run()
+        app.text_input[0].input("administrateur-test")
+        app.text_input[1].input("mot-de-passe-admin-test-long")
+        app.button[0].click().run()
+
+        commercial_selector = next(
+            selectbox for selectbox in app.selectbox if selectbox.label == "Commercial"
+        )
+        assert set(commercial_selector.options) == {
+            "Antoine BELLUAU · 79",
+            "Mathieu DUBREUIL · 79",
+        }
+
+        commercial_selector.select("Mathieu DUBREUIL · 79").run()
+        assert any(
+            "2 entreprises dans ce portefeuille" in caption.value
+            for caption in app.caption
+        )
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
