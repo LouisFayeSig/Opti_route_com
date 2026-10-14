@@ -26,6 +26,9 @@ class Settings:
     azure_maps_endpoint: str
     azure_maps_key: str | None
     geocode_cache_path: Path
+    ign_geocoding_endpoint: str = "https://data.geopf.fr/geocodage/search"
+    ign_geocoding_max_requests_per_second: float = 40.0
+    geocoding_azure_fallback: bool = False
     map_renderer: str = "pydeck"
     request_timeout_seconds: float = 30.0
     auth_mode: str = "password"
@@ -81,6 +84,22 @@ def _configured_value(
             if section_value is not None:
                 return str(section_value)
     return default
+
+
+def _configured_bool(
+    name: str,
+    secrets: Mapping[str, object] | None = None,
+    default: bool = False,
+) -> bool:
+    value = _configured_value(name, secrets)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "oui", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "non", "off"}:
+        return False
+    raise ValueError(f"{name} doit valoir true ou false.")
 
 
 def _local_test_accounts(value: str | None) -> tuple[LocalTestAccount, ...]:
@@ -151,6 +170,23 @@ def load_settings(
     cache_path = Path(cache_value)
     if not cache_path.is_absolute():
         cache_path = root / cache_path
+
+    ign_geocoding_endpoint = (
+        _configured_value(
+            "IGN_GEOCODING_ENDPOINT",
+            secrets,
+            "https://data.geopf.fr/geocodage/search",
+        )
+        or "https://data.geopf.fr/geocodage/search"
+    ).rstrip("/")
+    ign_geocoding_max_requests_per_second = float(
+        _configured_value("IGN_GEOCODING_MAX_REQUESTS_PER_SECOND", secrets, "40") or "40"
+    )
+    if not 0 < ign_geocoding_max_requests_per_second <= 50:
+        raise ValueError("IGN_GEOCODING_MAX_REQUESTS_PER_SECOND doit etre compris entre 0 et 50.")
+    geocoding_azure_fallback = _configured_bool(
+        "GEOCODING_AZURE_FALLBACK", secrets, default=False
+    )
 
     timeout = float(_configured_value("AZURE_MAPS_TIMEOUT_SECONDS", secrets, "30") or "30")
     map_renderer = (
@@ -224,6 +260,9 @@ def load_settings(
         azure_maps_endpoint=endpoint,
         azure_maps_key=key.strip() if key else None,
         geocode_cache_path=cache_path,
+        ign_geocoding_endpoint=ign_geocoding_endpoint,
+        ign_geocoding_max_requests_per_second=ign_geocoding_max_requests_per_second,
+        geocoding_azure_fallback=geocoding_azure_fallback,
         map_renderer=map_renderer,
         request_timeout_seconds=timeout,
         auth_mode=auth_mode,

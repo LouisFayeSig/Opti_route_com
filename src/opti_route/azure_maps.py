@@ -43,6 +43,7 @@ class StaticMapDiagnostic:
 
 class AzureMapsClient:
     API_VERSION = "2025-01-01"
+    provider = "Azure Maps"
 
     def __init__(self, endpoint: str, subscription_key: str, timeout_seconds: float = 30.0):
         self.endpoint = endpoint.rstrip("/")

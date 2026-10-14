@@ -24,6 +24,9 @@ CONFIG_VARIABLES = (
     "AZURE_STORAGE_CONNECTION_STRING",
     "AZURE_MAPS_SUBSCRIPTION_KEY",
     "AZURE_MAPS_KEY",
+    "IGN_GEOCODING_ENDPOINT",
+    "IGN_GEOCODING_MAX_REQUESTS_PER_SECOND",
+    "GEOCODING_AZURE_FALLBACK",
 )
 EMPTY_PROJECT_ROOT = Path("tests/.config-test-no-env")
 
@@ -54,6 +57,9 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
                 "AZURE_STORAGE_ACCOUNT_URL": "https://storage.blob.core.windows.net",
                 "AZURE_STORAGE_CONTAINER": "private-data",
                 "AZURE_MAPS_SUBSCRIPTION_KEY": "azure-cloud",
+                "IGN_GEOCODING_ENDPOINT": "https://geocoder.example.test/search",
+                "IGN_GEOCODING_MAX_REQUESTS_PER_SECOND": "35",
+                "GEOCODING_AZURE_FALLBACK": "true",
             }
         },
     )
@@ -74,6 +80,9 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
     assert settings.azure_storage_account_url == "https://storage.blob.core.windows.net"
     assert settings.azure_storage_container == "private-data"
     assert settings.azure_maps_key == "azure-cloud"
+    assert settings.ign_geocoding_endpoint == "https://geocoder.example.test/search"
+    assert settings.ign_geocoding_max_requests_per_second == 35
+    assert settings.geocoding_azure_fallback is True
 
 
 def test_environment_values_take_priority_over_streamlit_secrets(

@@ -36,6 +36,7 @@ from opti_route.data import (
 )
 from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
+from opti_route.ign_geocoding import IgnGeocodingClient
 from opti_route.importing import geocoded_workbook_bytes
 from opti_route.map_view import possibility_points_from_candidates, render_map
 from opti_route.planner import (
@@ -137,7 +138,8 @@ def _admin_import_panel(
     user: AuthenticatedUser,
     current_clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
-    azure_client: AzureMapsClient | None,
+    geocoding_client: IgnGeocodingClient,
+    azure_fallback_client: AzureMapsClient | None,
 ) -> None:
     if current_clients is not None:
         st.success(f"Portefeuille actif : {len(current_clients)} entreprises.")
@@ -245,16 +247,16 @@ def _admin_import_panel(
         f"{len(clients)} entreprises · {commercial_count} commerciaux · {geocoded} déjà géocodées"
     )
     if missing_coordinates:
-        if azure_client is None:
+        if geocoding_client is None:
             st.warning(
-                f"{missing_coordinates} entreprise(s) doivent être géocodées, mais Azure Maps "
-                "n'est pas configuré. Ajoutez les coordonnées au fichier ou configurez la clé "
-                "Azure Maps avant l'import."
+                f"{missing_coordinates} entreprise(s) doivent être géocodées, mais le service "
+                "public IGN/BAN n'est pas configuré. Ajoutez les coordonnées au fichier avant "
+                "l'import."
             )
         else:
             st.caption(
-                f"{missing_coordinates} entreprise(s) seront géocodées lors de l'enregistrement. "
-                "Les adresses déjà présentes dans le cache ne génèrent aucun appel Azure Maps."
+                f"{missing_coordinates} entreprise(s) seront géocodées via le service gratuit IGN/BAN. "
+                "Les adresses déjà présentes dans le cache ne génèrent aucun appel externe."
             )
     st.caption(
         f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
@@ -268,7 +270,7 @@ def _admin_import_panel(
         ),
         type="primary",
         use_container_width=True,
-        disabled=bool(missing_coordinates and azure_client is None),
+        disabled=bool(missing_coordinates and geocoding_client is None),
         key=f"save_portfolio_{file_hash}_{sheet}_{header_line}",
     ):
         try:
@@ -290,9 +292,12 @@ def _admin_import_panel(
 
                 enriched_clients, geocode_errors = geocode_missing_clients(
                     clients,
-                    azure_client,
+                    geocoding_client,
                     GeocodeCache(settings.geocode_cache_path),
                     progress=update_import_progress,
+                    fallback_client=(
+                        azure_fallback_client if settings.geocoding_azure_fallback else None
+                    ),
                 )
                 progress_bar.empty()
             store.save_clients(
@@ -642,6 +647,7 @@ def _render_admin_panel(
     clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
     configuration: RouteConfiguration,
+    ign_geocoding_client: IgnGeocodingClient,
     azure_client: AzureMapsClient | None,
 ) -> None:
     with st.expander("⚙️ Administration", expanded=clients is None):
@@ -649,7 +655,14 @@ def _render_admin_panel(
             ["Portefeuille d'entreprises", "Habilitations", "Contraintes", "Diagnostic Azure"]
         )
         with portfolio_tab:
-            _admin_import_panel(store, user, clients, metadata, azure_client)
+            _admin_import_panel(
+                store,
+                user,
+                clients,
+                metadata,
+                ign_geocoding_client,
+                azure_client,
+            )
         with access_tab:
             _admin_access_panel(store, user, clients)
         with settings_tab:
@@ -840,6 +853,11 @@ azure_client = (
     if settings.azure_maps_enabled
     else None
 )
+ign_geocoding_client = IgnGeocodingClient(
+    settings.ign_geocoding_endpoint,
+    timeout_seconds=settings.request_timeout_seconds,
+    max_requests_per_second=settings.ign_geocoding_max_requests_per_second,
+)
 
 title_column, status_column, account_column = st.columns([3.7, 1, 1.35])
 with title_column:
@@ -879,6 +897,7 @@ if authenticated_user.is_admin:
         clients,
         portfolio_metadata,
         route_configuration,
+        ign_geocoding_client,
         azure_client,
     )
 
@@ -1216,9 +1235,10 @@ with controls_column:
             ).drop_duplicates(subset=["client_id"], keep="first")
             enriched_clients, geocode_errors = geocode_missing_clients(
                 clients_to_geocode,
-                azure_client,
+                ign_geocoding_client,
                 cache,
                 progress=update_progress,
+                fallback_client=(azure_client if settings.geocoding_azure_fallback else None),
             )
             progress_bar.empty()
 

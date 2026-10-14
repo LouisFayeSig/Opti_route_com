@@ -20,7 +20,7 @@ dans [deployment/AZURE.md](deployment/AZURE.md).
 - retrait des seules visites facultatives depuis le résultat avec recalcul complet de la tournée ;
 - départ depuis une entreprise existante, affiché à l'ordre 0 ;
 - fin de tournée à la dernière visite, sans trajet de retour ;
-- cache SQLite des adresses géocodées ;
+- géocodage gratuit des adresses françaises par l'IGN / Base Adresse Nationale, avec cache SQLite ;
 - présélection des clients par rayon géographique ;
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
@@ -43,14 +43,14 @@ python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-Renseigner ensuite la configuration Azure Maps dans `.env` :
+Azure Maps reste nécessaire au calcul précis des itinéraires. Renseigner sa configuration dans `.env` :
 
 ```dotenv
 AZURE_MAPS_URI=https://atlas.microsoft.com
 AZURE_MAPS_SUBSCRIPTION_KEY=remplacer_par_la_cle
 ```
 
-`AZURE_MAPS_ENDPOINT` peut être utilisé à la place de `AZURE_MAPS_URI`. L'application emploie les API Azure Maps `2025-01-01` pour le géocodage, la matrice et le tracé routier.
+`AZURE_MAPS_ENDPOINT` peut être utilisé à la place de `AZURE_MAPS_URI`. L'application emploie les API Azure Maps `2025-01-01` pour la matrice et le tracé routier. Le géocodage des adresses françaises utilise le service public IGN / Base Adresse Nationale, sans clé API.
 
 ## Authentification
 
@@ -150,6 +150,9 @@ ADMIN_USERNAME = "administrateur"
 ADMIN_PASSWORD = "choisir-un-autre-mot-de-passe-long-et-unique"
 AZURE_MAPS_URI = "https://atlas.microsoft.com"
 AZURE_MAPS_SUBSCRIPTION_KEY = "votre-cle-azure-maps"
+IGN_GEOCODING_ENDPOINT = "https://data.geopf.fr/geocodage/search"
+IGN_GEOCODING_MAX_REQUESTS_PER_SECOND = "40"
+GEOCODING_AZURE_FALLBACK = "false"
 MAP_RENDERER = "pydeck"
 ```
 
@@ -214,8 +217,12 @@ le commercial est désormais obligatoire pour permettre le filtrage utilisateur.
 utilisé pour les habilitations ; pour assurer la compatibilité avec les anciens fichiers, le nom du
 commercial est utilisé comme code de repli lorsqu'aucune colonne dédiée n'est fournie. Les coordonnées
 sont facultatives : au moment où l'administrateur enregistre un import, les lignes qui n'en possèdent
-pas sont géocodées via Azure Maps et mises en cache dans `.cache/geocoding.sqlite3`. Le portefeuille
-enrichi est alors stocké ; les tournées et le calque ne relancent donc pas de géocodage pour ces clients.
+pas sont géocodées par le service public IGN / Base Adresse Nationale et mises en cache dans
+`.cache/geocoding.sqlite3`. L'application se limite à 40 appels par seconde, sous la limite publique
+de 50 appels/IP/seconde. Le portefeuille enrichi est alors stocké ; les tournées et le calque ne
+relancent donc pas de géocodage pour ces clients. `GEOCODING_AZURE_FALLBACK=false` évite tout appel
+Azure Maps pour les adresses introuvables ; l'administrateur peut l'activer explicitement si un repli
+payant est souhaité.
 
 ### Portefeuille final `Liste_client_def.xlsx`
 
@@ -250,7 +257,7 @@ entreprises sans coordonnees sont simplement absentes du calque. L'import produi
 un bouton de telechargement d'une copie Excel enrichie des colonnes `Latitude` et `Longitude`.
 Cette copie doit remplacer le fichier source pour conserver les coordonnees dans le temps ;
 un navigateur ne peut pas modifier silencieusement le fichier d'origine sur le poste de
-l'administrateur. Une adresse deja presente dans le cache ne genere pas un nouvel appel Azure Maps.
+l'administrateur. Une adresse deja presente dans le cache ne genere pas un nouvel appel au geocodeur.
 
 ## Tests
 
