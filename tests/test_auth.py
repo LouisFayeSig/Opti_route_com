@@ -7,14 +7,39 @@ from opti_route.auth import (
     AuthenticationError,
     authenticated_user_from_entra_claims,
     credentials_match,
+    password_user_from_credentials,
 )
-from opti_route.config import Settings
+from opti_route.config import LocalTestAccount, Settings
 
 
 def test_credentials_match_requires_both_exact_values() -> None:
     assert credentials_match("collaborateur", "secret", "collaborateur", "secret")
     assert not credentials_match("autre", "secret", "collaborateur", "secret")
     assert not credentials_match("collaborateur", "autre", "collaborateur", "secret")
+
+
+def test_password_authentication_recognizes_a_scoped_local_test_account() -> None:
+    settings = Settings(
+        azure_maps_endpoint="https://atlas.microsoft.com",
+        azure_maps_key=None,
+        geocode_cache_path=Path("cache.sqlite3"),
+        local_test_accounts=(
+            LocalTestAccount(
+                username="test-directeur",
+                password="test-secret",
+                display_name="Test Directeur",
+                role="director",
+                director_email="c.vernay@litt.fr",
+            ),
+        ),
+    )
+
+    user = password_user_from_credentials(settings, "test-directeur", "test-secret")
+
+    assert user is not None
+    assert user.is_director
+    assert user.principal_id == "local:test-directeur"
+    assert password_user_from_credentials(settings, "test-directeur", "incorrect") is None
 
 
 def test_authenticated_user_exposes_admin_role() -> None:

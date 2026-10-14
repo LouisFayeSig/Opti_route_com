@@ -237,6 +237,14 @@ def suggest_column_mapping(columns: pd.Index) -> dict[str, str]:
                 mapping[target] = source
                 claimed.add(source)
                 break
+
+    # Le classeur Liste_client_def porte trois niveaux dans ses colonnes :
+    # ``Code UG`` (10), agence (03) et portefeuille ATC (82). La colonne
+    # ``code`` contient leur concatenation (10-03-82) et est donc la seule
+    # reference ATC non ambigue. ``code ATC`` ne contient que le dernier
+    # niveau et peut etre reutilise dans plusieurs agences.
+    if {"code", "code_ug", "code_atc"}.issubset(normalized):
+        mapping["salesperson_code"] = normalized["code"]
     return mapping
 
 
@@ -334,6 +342,16 @@ def standardize_clients(
         clients[column] = clients[column].astype("string").str.strip()
 
     _fill_sales_hierarchy(clients)
+
+    # Dans Liste_client_def, l'agence n'est pas une colonne distincte : elle
+    # correspond aux deux premiers segments de la reference portefeuille
+    # complete, par exemple 10-03 dans 10-03-82. Ne jamais utiliser Code UG
+    # seul ici : une meme UG peut contenir plusieurs agences.
+    missing_agency = clients["agency"].isna() | clients["agency"].eq("")
+    derived_agency = clients["salesperson_code"].str.extract(
+        r"^(\d+-\d+)-\d+$", expand=False
+    )
+    clients.loc[missing_agency & derived_agency.notna(), "agency"] = derived_agency
 
     generated_ids = pd.Series(
         [f"ADRESSE-{position + 1}" for position in range(len(clients))],

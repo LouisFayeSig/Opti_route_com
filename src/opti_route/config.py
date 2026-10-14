@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+@dataclass(frozen=True)
+class LocalTestAccount:
+    """Compte local temporaire, utilisé uniquement avant le déploiement Entra."""
+
+    username: str
+    password: str
+    display_name: str
+    role: str
+    atc_code: str | None = None
+    director_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -20,6 +33,7 @@ class Settings:
     auth_password: str | None = None
     admin_username: str | None = None
     admin_password: str | None = None
+    local_test_accounts: tuple[LocalTestAccount, ...] = ()
     admin_emails: tuple[str, ...] = ()
     entra_tenant_id: str | None = None
     entra_atc_role: str = "OptiRoute.ATC"
@@ -34,6 +48,17 @@ class Settings:
     @property
     def azure_maps_enabled(self) -> bool:
         return bool(self.azure_maps_key)
+
+    def local_test_account(self, username: str) -> LocalTestAccount | None:
+        normalized_username = username.strip().casefold()
+        return next(
+            (
+                account
+                for account in self.local_test_accounts
+                if account.username.casefold() == normalized_username
+            ),
+            None,
+        )
 
 
 def _configured_value(
@@ -56,6 +81,54 @@ def _configured_value(
             if section_value is not None:
                 return str(section_value)
     return default
+
+
+def _local_test_accounts(value: str | None) -> tuple[LocalTestAccount, ...]:
+    """Décode les comptes temporaires sans les stocker dans le dépôt."""
+
+    if not value or not value.strip():
+        return ()
+    try:
+        entries = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("LOCAL_TEST_ACCOUNTS_JSON doit contenir une liste JSON valide.") from exc
+    if not isinstance(entries, list):
+        raise TypeError("LOCAL_TEST_ACCOUNTS_JSON doit contenir une liste de comptes.")
+
+    accounts: list[LocalTestAccount] = []
+    usernames: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise TypeError("Chaque compte de test local doit être un objet JSON.")
+        username = str(entry.get("username") or "").strip()
+        password = str(entry.get("password") or "")
+        display_name = str(entry.get("display_name") or username).strip()
+        role = str(entry.get("role") or "").strip().casefold()
+        atc_code = str(entry.get("atc_code") or "").strip() or None
+        director_email = str(entry.get("director_email") or "").strip().casefold() or None
+        normalized_username = username.casefold()
+        if not username or not password or not display_name:
+            raise ValueError("Chaque compte de test local doit avoir un identifiant et un mot de passe.")
+        if normalized_username in usernames:
+            raise ValueError("Les identifiants des comptes de test locaux doivent être distincts.")
+        if role not in {"atc", "director"}:
+            raise ValueError("Le rôle d'un compte de test local doit être atc ou director.")
+        if role == "atc" and not atc_code:
+            raise ValueError("Un compte de test ATC doit renseigner atc_code.")
+        if role == "director" and not director_email:
+            raise ValueError("Un compte de test directeur doit renseigner director_email.")
+        usernames.add(normalized_username)
+        accounts.append(
+            LocalTestAccount(
+                username=username,
+                password=password,
+                display_name=display_name,
+                role=role,
+                atc_code=atc_code if role == "atc" else None,
+                director_email=director_email if role == "director" else None,
+            )
+        )
+    return tuple(accounts)
 
 
 def load_settings(
@@ -92,6 +165,9 @@ def load_settings(
     auth_password = _configured_value("AUTH_PASSWORD", secrets)
     admin_username = _configured_value("ADMIN_USERNAME", secrets)
     admin_password = _configured_value("ADMIN_PASSWORD", secrets)
+    local_test_accounts = _local_test_accounts(
+        _configured_value("LOCAL_TEST_ACCOUNTS_JSON", secrets)
+    )
     admin_emails_value = _configured_value("ADMIN_EMAILS", secrets, "") or ""
     admin_emails = tuple(
         value.strip().casefold() for value in admin_emails_value.split(",") if value.strip()
@@ -114,6 +190,16 @@ def load_settings(
         {value.casefold() for value in configured_entra_roles}
     ) != len(configured_entra_roles):
         raise ValueError("Les trois App Roles Entra doivent être non vides et distincts.")
+    configured_usernames = [
+        value.strip().casefold()
+        for value in (auth_username, admin_username)
+        if value and value.strip()
+    ]
+    configured_usernames.extend(
+        account.username.casefold() for account in local_test_accounts
+    )
+    if len(configured_usernames) != len(set(configured_usernames)):
+        raise ValueError("Les identifiants locaux doivent être distincts.")
     storage_backend = (
         (_configured_value("APP_STORAGE_BACKEND", secrets, "sqlite") or "sqlite")
         .strip()
@@ -145,6 +231,7 @@ def load_settings(
         auth_password=auth_password if auth_password else None,
         admin_username=admin_username.strip() if admin_username else None,
         admin_password=admin_password if admin_password else None,
+        local_test_accounts=local_test_accounts,
         admin_emails=admin_emails,
         entra_tenant_id=entra_tenant_id.strip() if entra_tenant_id else None,
         entra_atc_role=entra_atc_role.strip(),

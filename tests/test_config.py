@@ -12,6 +12,7 @@ CONFIG_VARIABLES = (
     "AUTH_PASSWORD",
     "ADMIN_USERNAME",
     "ADMIN_PASSWORD",
+    "LOCAL_TEST_ACCOUNTS_JSON",
     "ADMIN_EMAILS",
     "ENTRA_TENANT_ID",
     "ENTRA_ROLE_ATC",
@@ -40,6 +41,10 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
                 "AUTH_PASSWORD": "secret-cloud",
                 "ADMIN_USERNAME": "administrateur-cloud",
                 "ADMIN_PASSWORD": "secret-admin-cloud",
+                "LOCAL_TEST_ACCOUNTS_JSON": (
+                    '[{"username":"test-atc","password":"test-secret",'
+                    '"display_name":"Test ATC","role":"atc","atc_code":"31-02-004"}]'
+                ),
                 "ADMIN_EMAILS": "Admin@Example.com, autre@example.com",
                 "ENTRA_TENANT_ID": "tenant-id",
                 "ENTRA_ROLE_ATC": "Route.ATC",
@@ -58,6 +63,8 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
     assert settings.auth_password == "secret-cloud"
     assert settings.admin_username == "administrateur-cloud"
     assert settings.admin_password == "secret-admin-cloud"
+    assert settings.local_test_accounts[0].username == "test-atc"
+    assert settings.local_test_accounts[0].atc_code == "31-02-004"
     assert settings.admin_emails == ("admin@example.com", "autre@example.com")
     assert settings.entra_tenant_id == "tenant-id"
     assert settings.entra_atc_role == "Route.ATC"
@@ -104,6 +111,24 @@ def test_entra_application_roles_must_be_distinct(monkeypatch) -> None:
                     "ENTRA_ROLE_ATC": "OptiRoute.Same",
                     "ENTRA_ROLE_DIRECTOR": "OptiRoute.Same",
                     "ENTRA_ROLE_ADMIN": "OptiRoute.Admin",
+                }
+            },
+        )
+
+
+def test_local_test_accounts_require_a_scope(monkeypatch) -> None:
+    for name in CONFIG_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(ValueError, match="atc_code"):
+        load_settings(
+            EMPTY_PROJECT_ROOT,
+            secrets={
+                "app": {
+                    "LOCAL_TEST_ACCOUNTS_JSON": (
+                        '[{"username":"test-atc","password":"secret",'
+                        '"role":"atc"}]'
+                    )
                 }
             },
         )

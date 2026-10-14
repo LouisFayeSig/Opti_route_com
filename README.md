@@ -25,7 +25,7 @@ dans [deployment/AZURE.md](deployment/AZURE.md).
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
-- calque administrateur facultatif : entreprises non retenues en jaune dans le périmètre de la tournée et en vert au-delà ;
+- calque facultatif pour chaque utilisateur : entreprises non retenues en jaune dans le périmètre de la tournée et en vert au-delà, sans géocodage additionnel ;
 - export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
@@ -79,6 +79,17 @@ préférer Entra ID.
 Le compte `ADMIN_USERNAME` dispose du panneau **Administration**. Le compte utilisateur ne voit ni
 l'import ni les contrôles des contraintes et peut seulement choisir le commercial, les entreprises,
 le départ et d'éventuels rendez-vous déjà planifiés.
+
+Pour une recette avant Entra ID, des comptes locaux supplémentaires peuvent être configurés avec
+`LOCAL_TEST_ACCOUNTS_JSON`. Ils reproduisent les rôles et périmètres finaux sans être enregistrés
+dans la base applicative. Exemple (à placer uniquement dans `.env` ou dans les secrets de
+l'hébergeur) :
+
+```dotenv
+LOCAL_TEST_ACCOUNTS_JSON=[{"username":"test-atc","password":"mot-de-passe-long","display_name":"Test ATC","role":"atc","atc_code":"31-02-004"},{"username":"test-directeur","password":"autre-mot-de-passe-long","display_name":"Test Directeur","role":"director","director_email":"c.vernay@litt.fr"}]
+```
+
+Ces comptes sont temporaires : les retirer des secrets dès le basculement vers `AUTH_MODE=entra`.
 
 ### Microsoft Entra ID
 
@@ -202,10 +213,11 @@ Une colonne d'adresse suffit et le code ainsi que le nom du client peuvent être
 le commercial est désormais obligatoire pour permettre le filtrage utilisateur. Le code ATC est
 utilisé pour les habilitations ; pour assurer la compatibilité avec les anciens fichiers, le nom du
 commercial est utilisé comme code de repli lorsqu'aucune colonne dédiée n'est fournie. Les coordonnées
-sont facultatives : les lignes qui n'en possèdent pas sont géocodées via Azure Maps et mises en cache
-dans `.cache/geocoding.sqlite3`.
+sont facultatives : au moment où l'administrateur enregistre un import, les lignes qui n'en possèdent
+pas sont géocodées via Azure Maps et mises en cache dans `.cache/geocoding.sqlite3`. Le portefeuille
+enrichi est alors stocké ; les tournées et le calque ne relancent donc pas de géocodage pour ces clients.
 
-### Portefeuille final `Liste_client.xlsx`
+### Portefeuille final `Liste_client_def.xlsx`
 
 La feuille **Listing client** est reconnue sans correspondance manuelle :
 
@@ -213,8 +225,8 @@ La feuille **Listing client** est reconnue sans correspondance manuelle :
 |---|---|
 | `rai_soc` | nom du client |
 | `RUE`, `cp`, `ville` | adresse a geocoder |
-| `Nom`, `code ATC`, `Email Nom (E)` | commercial et son perimetre |
-| `Code Agence` | reference regionale de l'agence |
+| `Nom`, `code`, `Email Nom (E)` | commercial, reference ATC complete et perimetre |
+| `Code UG`, `code ATC` | informations de decomposition de la reference : UG et portefeuille |
 | `N+1`, `Email N+1 (H)` | directeur et portefeuille de ses commerciaux |
 
 Le N+1 et son e-mail peuvent etre renseignes une seule fois par commercial : ils sont
@@ -225,6 +237,20 @@ Entra reste obligatoire ; l'e-mail importe sert a definir le perimetre, pas a au
 un utilisateur. Un ATC ne voit que les clients de son e-mail professionnel et un directeur
 voit les clients des commerciaux rattaches a son e-mail N+1. L'ancien filtrage par agence
 reste disponible pour les portefeuilles historiques qui ne contiennent pas ces e-mails.
+
+Pour `Liste_client_def.xlsx`, la reference utilisee par Opti Route est la colonne `code`
+complete : par exemple `10-03-82` pour Yvon RONDEL. `10` est l'UG, `03` l'agence et
+`82` le portefeuille ; le code agence conserve dans l'application est donc `10-03`.
+Le seul `code ATC` (`82`) n'est pas utilise comme identifiant, car il peut etre present
+dans plusieurs agences.
+
+Le calque des possibilites est visible par tous, mais uniquement sur le portefeuille
+auquel la session a deja droit. Son activation ne geocode aucune nouvelle adresse : les
+entreprises sans coordonnees sont simplement absentes du calque. L'import produit aussi
+un bouton de telechargement d'une copie Excel enrichie des colonnes `Latitude` et `Longitude`.
+Cette copie doit remplacer le fichier source pour conserver les coordonnees dans le temps ;
+un navigateur ne peut pas modifier silencieusement le fichier d'origine sur le poste de
+l'administrateur. Une adresse deja presente dans le cache ne genere pas un nouvel appel Azure Maps.
 
 ## Tests
 

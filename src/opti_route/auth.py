@@ -11,6 +11,7 @@ from .config import Settings
 
 _AUTHENTICATED_KEY = "opti_route_authenticated"
 _AUTHENTICATED_NAME_KEY = "opti_route_authenticated_name"
+_AUTHENTICATED_PRINCIPAL_NAME_KEY = "opti_route_authenticated_principal_name"
 _AUTHENTICATED_ROLE_KEY = "opti_route_authenticated_role"
 _FAILED_ATTEMPTS_KEY = "opti_route_failed_login_attempts"
 _LOCKED_UNTIL_KEY = "opti_route_login_locked_until"
@@ -121,6 +122,51 @@ def credentials_match(
     return username_matches and password_matches
 
 
+def password_user_from_credentials(
+    settings: Settings, username: str, password: str
+) -> AuthenticatedUser | None:
+    """Authentifie un compte local classique, administrateur ou temporaire."""
+
+    if (
+        settings.auth_username
+        and settings.auth_password
+        and credentials_match(
+            username, password, settings.auth_username, settings.auth_password
+        )
+    ):
+        return AuthenticatedUser(
+            settings.auth_username,
+            "password",
+            ROLE_ATC,
+            principal_id=f"local:{settings.auth_username.casefold()}",
+            principal_name=settings.auth_username,
+        )
+    if (
+        settings.admin_username
+        and settings.admin_password
+        and credentials_match(
+            username, password, settings.admin_username, settings.admin_password
+        )
+    ):
+        return AuthenticatedUser(
+            settings.admin_username,
+            "password",
+            ROLE_ADMIN,
+            principal_id=f"local:{settings.admin_username.casefold()}",
+            principal_name=settings.admin_username,
+        )
+    for account in settings.local_test_accounts:
+        if credentials_match(username, password, account.username, account.password):
+            return AuthenticatedUser(
+                account.display_name,
+                "password",
+                account.role,
+                principal_id=f"local:{account.username.casefold()}",
+                principal_name=account.username,
+            )
+    return None
+
+
 def _login_heading(description: str) -> None:
     st.title("🧭 Opti Route Com")
     st.markdown(
@@ -131,22 +177,27 @@ def _login_heading(description: str) -> None:
 
 
 def _require_password_auth(settings: Settings) -> AuthenticatedUser:
-    if not settings.auth_username or not settings.auth_password:
+    has_standard_user = bool(settings.auth_username and settings.auth_password)
+    has_admin = bool(settings.admin_username and settings.admin_password)
+    if not (has_standard_user or has_admin or settings.local_test_accounts):
         _login_heading("L’authentification locale doit être configurée par l’administrateur.")
         st.error(
-            "Renseignez AUTH_USERNAME et AUTH_PASSWORD dans le fichier .env en local, "
-            "ou dans la section [app] des secrets Streamlit en déploiement, puis redémarrez."
+            "Renseignez un compte AUTH_*, ADMIN_* ou LOCAL_TEST_ACCOUNTS_JSON dans le fichier "
+            ".env en local, ou dans la section [app] des secrets Streamlit en déploiement."
         )
         st.stop()
 
     if st.session_state.get(_AUTHENTICATED_KEY) is True:
-        name = str(st.session_state.get(_AUTHENTICATED_NAME_KEY) or settings.auth_username)
+        name = str(st.session_state.get(_AUTHENTICATED_NAME_KEY) or "Collaborateur")
+        principal_name = str(
+            st.session_state.get(_AUTHENTICATED_PRINCIPAL_NAME_KEY) or name
+        )
         return AuthenticatedUser(
             name,
             "password",
             str(st.session_state.get(_AUTHENTICATED_ROLE_KEY) or ROLE_ATC),
-            principal_id=f"local:{name.casefold()}",
-            principal_name=name,
+            principal_id=f"local:{principal_name.casefold()}",
+            principal_name=principal_name,
         )
 
     _login_heading("Saisissez l’identifiant partagé configuré pour cette application.")
@@ -171,26 +222,14 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
         )
 
     if submitted:
-        user_matches = credentials_match(
-            username,
-            password,
-            settings.auth_username,
-            settings.auth_password,
-        )
-        admin_matches = bool(
-            settings.admin_username and settings.admin_password
-        ) and credentials_match(
-            username,
-            password,
-            settings.admin_username or "",
-            settings.admin_password or "",
-        )
-        if user_matches or admin_matches:
+        authenticated_user = password_user_from_credentials(settings, username, password)
+        if authenticated_user is not None:
             st.session_state[_AUTHENTICATED_KEY] = True
-            st.session_state[_AUTHENTICATED_NAME_KEY] = username
-            st.session_state[_AUTHENTICATED_ROLE_KEY] = (
-                ROLE_ADMIN if admin_matches else ROLE_ATC
+            st.session_state[_AUTHENTICATED_NAME_KEY] = authenticated_user.display_name
+            st.session_state[_AUTHENTICATED_PRINCIPAL_NAME_KEY] = (
+                authenticated_user.principal_name
             )
+            st.session_state[_AUTHENTICATED_ROLE_KEY] = authenticated_user.role
             st.session_state.pop(_FAILED_ATTEMPTS_KEY, None)
             st.session_state.pop(_LOCKED_UNTIL_KEY, None)
             st.rerun()
@@ -290,6 +329,7 @@ def render_account_controls(user: AuthenticatedUser) -> None:
     elif st.button("Se déconnecter", use_container_width=True):
         st.session_state.pop(_AUTHENTICATED_KEY, None)
         st.session_state.pop(_AUTHENTICATED_NAME_KEY, None)
+        st.session_state.pop(_AUTHENTICATED_PRINCIPAL_NAME_KEY, None)
         st.session_state.pop(_AUTHENTICATED_ROLE_KEY, None)
         st.session_state.pop(_FAILED_ATTEMPTS_KEY, None)
         st.session_state.pop(_LOCKED_UNTIL_KEY, None)

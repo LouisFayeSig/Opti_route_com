@@ -36,6 +36,7 @@ from opti_route.data import (
 )
 from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
+from opti_route.importing import geocoded_workbook_bytes
 from opti_route.map_view import possibility_points_from_candidates, render_map
 from opti_route.planner import (
     PlanningError,
@@ -136,6 +137,7 @@ def _admin_import_panel(
     user: AuthenticatedUser,
     current_clients: pd.DataFrame | None,
     metadata: PortfolioMetadata | None,
+    azure_client: AzureMapsClient | None,
 ) -> None:
     if current_clients is not None:
         st.success(f"Portefeuille actif : {len(current_clients)} entreprises.")
@@ -232,6 +234,7 @@ def _admin_import_panel(
         return
 
     geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
+    missing_coordinates = len(clients) - geocoded
     commercial_count = clients["salesperson"].nunique()
     atc_scopes = clients[
         ["salesperson_code", "salesperson", "salesperson_email", "director_email"]
@@ -241,19 +244,59 @@ def _admin_import_panel(
     st.caption(
         f"{len(clients)} entreprises · {commercial_count} commerciaux · {geocoded} déjà géocodées"
     )
+    if missing_coordinates:
+        if azure_client is None:
+            st.warning(
+                f"{missing_coordinates} entreprise(s) doivent être géocodées, mais Azure Maps "
+                "n'est pas configuré. Ajoutez les coordonnées au fichier ou configurez la clé "
+                "Azure Maps avant l'import."
+            )
+        else:
+            st.caption(
+                f"{missing_coordinates} entreprise(s) seront géocodées lors de l'enregistrement. "
+                "Les adresses déjà présentes dans le cache ne génèrent aucun appel Azure Maps."
+            )
     st.caption(
         f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
         f"et {atc_with_director}/{len(atc_scopes)} rattaches a un directeur."
     )
     if st.button(
-        "Enregistrer ce portefeuille",
+        (
+            "Enregistrer et géocoder le portefeuille"
+            if missing_coordinates
+            else "Enregistrer ce portefeuille"
+        ),
         type="primary",
         use_container_width=True,
+        disabled=bool(missing_coordinates and azure_client is None),
         key=f"save_portfolio_{file_hash}_{sheet}_{header_line}",
     ):
         try:
+            enriched_clients = clients
+            geocode_errors: list[str] = []
+            if missing_coordinates:
+                progress_bar = st.progress(
+                    0,
+                    text="Géocodage du portefeuille avant import…",
+                )
+
+                def update_import_progress(
+                    position: int, total: int, company_name: str
+                ) -> None:
+                    progress_bar.progress(
+                        position / max(total, 1),
+                        text=f"Géocodage {position}/{total} · {company_name}",
+                    )
+
+                enriched_clients, geocode_errors = geocode_missing_clients(
+                    clients,
+                    azure_client,
+                    GeocodeCache(settings.geocode_cache_path),
+                    progress=update_import_progress,
+                )
+                progress_bar.empty()
             store.save_clients(
-                clients,
+                enriched_clients,
                 source_name=uploaded.name,
                 imported_by=user.display_name,
             )
@@ -262,8 +305,48 @@ def _admin_import_panel(
         else:
             _load_persistent_app_state.clear()
             st.session_state.pop("route_plan", None)
-            st.success("Le portefeuille sécurisé a été remplacé.")
+            result_key = f"geocoded_import_result_{file_hash}_{sheet}_{header_line}"
+            st.session_state[result_key] = {
+                "errors": geocode_errors,
+                "geocoded": int(
+                    enriched_clients[["latitude", "longitude"]].notna().all(axis=1).sum()
+                ),
+            }
+            if missing_coordinates and suffix in {".xlsx", ".xlsm"}:
+                st.session_state[f"{result_key}_workbook"] = geocoded_workbook_bytes(
+                    file_bytes,
+                    suffix=suffix,
+                    sheet_name=str(sheet),
+                    header_line=int(header_line),
+                    raw=raw,
+                    clients=enriched_clients,
+                )
             st.rerun()
+
+    result_key = f"geocoded_import_result_{file_hash}_{sheet}_{header_line}"
+    import_result = st.session_state.get(result_key)
+    if import_result is not None:
+        geocode_errors = list(import_result["errors"])
+        st.success(
+            "Le portefeuille sécurisé a été remplacé "
+            f"({import_result['geocoded']}/{len(clients)} entreprises géocodées)."
+        )
+        if geocode_errors:
+            st.warning(
+                f"{len(geocode_errors)} adresse(s) n'ont pas pu être géocodées et restent "
+                "sans coordonnées. "
+                + " · ".join(geocode_errors[:3])
+            )
+        enriched_workbook = st.session_state.get(f"{result_key}_workbook")
+        if enriched_workbook is not None:
+            st.download_button(
+                "Télécharger le fichier enrichi des coordonnées",
+                data=enriched_workbook,
+                file_name=f"{Path(uploaded.name).stem}_geocode{suffix}",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"download_geocoded_portfolio_{file_hash}_{sheet}_{header_line}",
+            )
 
 
 def _admin_settings_panel(
@@ -566,7 +649,7 @@ def _render_admin_panel(
             ["Portefeuille d'entreprises", "Habilitations", "Contraintes", "Diagnostic Azure"]
         )
         with portfolio_tab:
-            _admin_import_panel(store, user, clients, metadata)
+            _admin_import_panel(store, user, clients, metadata, azure_client)
         with access_tab:
             _admin_access_panel(store, user, clients)
         with settings_tab:
@@ -584,6 +667,25 @@ def _clear_selectbox_value(widget_key: str) -> None:
     """Efface un choix de liste via un callback exécuté avant le prochain rendu."""
 
     st.session_state[widget_key] = None
+
+
+def _configured_local_test_profile(
+    user: AuthenticatedUser, settings: Settings
+) -> UserAccessProfile | None:
+    """Construit l'habilitation éphémère d'un compte de test local."""
+
+    if user.method != "password":
+        return None
+    account = settings.local_test_account(user.principal_name)
+    if account is None:
+        return None
+    return UserAccessProfile(
+        principal_id=user.principal_id,
+        display_name=account.display_name,
+        role=account.role,
+        atc_code=account.atc_code,
+        director_email=account.director_email,
+    ).validated()
 
 
 def _render_plan_summary(
@@ -788,11 +890,11 @@ if clients is None or portfolio_metadata is None:
     st.stop()
 
 try:
-    access_profile = (
-        None
-        if authenticated_user.is_admin
-        else store.load_access_profile(authenticated_user.principal_id)
-    )
+    access_profile = None
+    if not authenticated_user.is_admin:
+        access_profile = _configured_local_test_profile(authenticated_user, settings)
+        if access_profile is None:
+            access_profile = store.load_access_profile(authenticated_user.principal_id)
     authorized_portfolio = authorize_portfolio(clients, authenticated_user, access_profile)
 except (AccessDeniedError, StorageError) as exc:
     st.error(str(exc))
@@ -1178,10 +1280,11 @@ with controls_column:
                     + " · ".join(geocode_errors[:3])
                 )
             st.session_state["route_plan"] = plan
-            if authenticated_user.is_admin:
-                st.session_state["route_overlay_candidates"] = assigned_clients.copy()
-                st.session_state["route_overlay_start_client_id"] = start_client_id
-                st.session_state.pop("route_overlay_geocode_errors", None)
+            # Le calque est limite au portefeuille deja autorise pour la
+            # session. Il est disponible a tous les roles, sans elargir le
+            # perimetre de donnees.
+            st.session_state["route_overlay_candidates"] = assigned_clients.copy()
+            st.session_state["route_overlay_start_client_id"] = start_client_id
         except (PlanningError, ClientDataError, StorageError, ValueError) as exc:
             st.error(str(exc))
         except Exception as exc:
@@ -1202,67 +1305,44 @@ with map_column:
         )
     else:
         possibility_points: list[dict[str, object]] | None = None
-        if authenticated_user.is_admin:
-            show_possibility_layer = st.toggle(
-                "Afficher le calque des possibilités",
-                key=f"possibility_layer_{plan.created_at.isoformat()}",
-                help=(
-                    "Jaune : entreprises situées dans le rayon du point sélectionné le plus "
-                    "éloigné du départ. Vert : entreprises plus éloignées."
-                ),
+        show_possibility_layer = st.toggle(
+            "Afficher le calque des possibilités",
+            key=f"possibility_layer_{plan.created_at.isoformat()}",
+            help=(
+                "Jaune : entreprises situées dans le rayon du point sélectionné le plus "
+                "éloigné du départ. Vert : entreprises plus éloignées. Le calque n'envoie "
+                "aucune nouvelle adresse à Azure Maps."
+            ),
+        )
+        if show_possibility_layer:
+            overlay_candidates = st.session_state.get(
+                "route_overlay_candidates", assigned_clients
             )
-            if show_possibility_layer:
-                overlay_candidates = st.session_state.get(
-                    "route_overlay_candidates", assigned_clients
-                )
-                missing_overlay_coordinates = (
-                    overlay_candidates["latitude"].isna()
-                    | overlay_candidates["longitude"].isna()
-                )
-                if missing_overlay_coordinates.any():
-                    progress_bar = st.progress(
-                        0,
-                        text="Préparation du calque : vérification des coordonnées…",
-                    )
-
-                    def update_overlay_progress(
-                        position: int, total: int, company_name: str
-                    ) -> None:
-                        progress_bar.progress(
-                            position / max(total, 1),
-                            text=f"Calque {position}/{total} · {company_name}",
-                        )
-
-                    overlay_candidates, overlay_geocode_errors = geocode_missing_clients(
-                        overlay_candidates,
-                        azure_client,
-                        GeocodeCache(settings.geocode_cache_path),
-                        progress=update_overlay_progress,
-                    )
-                    progress_bar.empty()
-                    st.session_state["route_overlay_candidates"] = overlay_candidates
-                    st.session_state["route_overlay_geocode_errors"] = overlay_geocode_errors
-                overlay_start_client_id = st.session_state.get(
-                    "route_overlay_start_client_id", start_client_id
-                )
-                (
-                    possibility_points,
-                    nearby_count,
-                    distant_count,
-                    furthest_selected_km,
-                ) = possibility_points_from_candidates(
-                    plan, overlay_candidates, overlay_start_client_id
-                )
+            missing_overlay_coordinates = (
+                overlay_candidates["latitude"].isna()
+                | overlay_candidates["longitude"].isna()
+            )
+            overlay_start_client_id = st.session_state.get(
+                "route_overlay_start_client_id", start_client_id
+            )
+            (
+                possibility_points,
+                nearby_count,
+                distant_count,
+                furthest_selected_km,
+            ) = possibility_points_from_candidates(
+                plan, overlay_candidates, overlay_start_client_id
+            )
+            st.caption(
+                f"Référence : {furthest_selected_km:.1f} km à vol d'oiseau depuis le départ · "
+                f"{nearby_count} possibilité(s) en jaune · {distant_count} en vert"
+            )
+            if missing_overlay_coordinates.any():
                 st.caption(
-                    f"Référence : {furthest_selected_km:.1f} km à vol d'oiseau depuis le départ · "
-                    f"{nearby_count} possibilité(s) en jaune · {distant_count} en vert"
+                    f"{int(missing_overlay_coordinates.sum())} entreprise(s) sans coordonnées "
+                    "ne sont pas affichées dans le calque. Aucun géocodage supplémentaire "
+                    "n'est lancé."
                 )
-                overlay_geocode_errors = st.session_state.get("route_overlay_geocode_errors", [])
-                if overlay_geocode_errors:
-                    st.warning(
-                        f"{len(overlay_geocode_errors)} entreprise(s) ne peuvent pas être "
-                        "affichées dans le calque faute de coordonnées."
-                    )
         _render_plan_summary(plan, possibility_points=possibility_points)
 
 plan = st.session_state.get("route_plan")

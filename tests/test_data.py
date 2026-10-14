@@ -14,6 +14,7 @@ from opti_route.data import (
     suggest_column_mapping,
     validate_uploaded_file,
 )
+from opti_route.importing import geocoded_workbook_bytes
 
 
 def test_detects_real_world_french_column_variants() -> None:
@@ -97,6 +98,31 @@ def test_recognizes_final_listing_contract_and_propagates_manager_scope() -> Non
     assert clients.loc[2, "director_email"] == "manager.b@example.test"
 
 
+def test_recognizes_listing_client_def_complete_portfolio_code() -> None:
+    raw = pd.DataFrame(
+        {
+            "rai_soc": ["ABK AGENCEMENT"],
+            "RUE": ["22 avenue President"],
+            "cp": ["76290"],
+            "ville": ["Montivilliers"],
+            "Nom": ["Yvon RONDEL"],
+            "code": ["10-03-82"],
+            "Code UG": ["10"],
+            "code ATC": ["82"],
+            "N+1": ["Guillaume DODARD"],
+            "Email Nom (E)": ["y.rondel@example.test"],
+            "Email N+1 (H)": ["g.dodard@example.test"],
+        }
+    )
+
+    mapping = suggest_column_mapping(raw.columns)
+    clients = standardize_clients(raw)
+
+    assert mapping["salesperson_code"] == "code"
+    assert clients.loc[0, "salesperson_code"] == "10-03-82"
+    assert clients.loc[0, "agency"] == "10-03"
+
+
 def test_manual_mapping_accepts_unknown_column_names() -> None:
     raw = pd.DataFrame(
         {
@@ -158,6 +184,42 @@ def test_reads_workbook_sheet_and_custom_header_row() -> None:
 def test_prefers_the_final_listing_client_sheet() -> None:
     assert preferred_portfolio_sheet_index(["Liste_client caen", "Listing client"]) == 1
     assert preferred_portfolio_sheet_index(["Portefeuille"]) == 0
+
+
+def test_geocoded_workbook_preserves_other_sheets_and_adds_coordinates() -> None:
+    workbook = BytesIO()
+    raw = pd.DataFrame(
+        {
+            "rai_soc": ["Alpha", "Beta"],
+            "RUE": ["1 rue A", "2 rue B"],
+        }
+    )
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        raw.to_excel(writer, sheet_name="Listing client", index=False)
+        pd.DataFrame({"Nom affiche": ["Alice"]}).to_excel(
+            writer, sheet_name="Utilisateurs", index=False
+        )
+    clients = pd.DataFrame(
+        {
+            "latitude": [49.18, 49.19],
+            "longitude": [-0.37, -0.38],
+        }
+    )
+
+    enriched_bytes = geocoded_workbook_bytes(
+        workbook.getvalue(),
+        suffix=".xlsx",
+        sheet_name="Listing client",
+        header_line=1,
+        raw=raw,
+        clients=clients,
+    )
+    enriched_listing = pd.read_excel(BytesIO(enriched_bytes), sheet_name="Listing client")
+    enriched_workbook = pd.ExcelFile(BytesIO(enriched_bytes))
+
+    assert enriched_workbook.sheet_names == ["Listing client", "Utilisateurs"]
+    assert enriched_listing["Latitude"].tolist() == [49.18, 49.19]
+    assert enriched_listing["Longitude"].tolist() == [-0.37, -0.38]
 
 
 def test_upload_validation_rejects_fake_office_archives() -> None:
