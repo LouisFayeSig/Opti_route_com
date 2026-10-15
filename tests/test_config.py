@@ -108,6 +108,13 @@ def test_environment_values_take_priority_over_streamlit_secrets(
     assert settings.auth_password == "local-secret"
 
 
+def test_azure_geocoding_fallback_is_enabled_by_default(monkeypatch) -> None:
+    for name in CONFIG_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+    assert load_settings(EMPTY_PROJECT_ROOT).geocoding_azure_fallback is True
+
+
 def test_entra_application_roles_must_be_distinct(monkeypatch) -> None:
     for name in CONFIG_VARIABLES:
         monkeypatch.delenv(name, raising=False)

@@ -28,7 +28,7 @@ class Settings:
     geocode_cache_path: Path
     ign_geocoding_endpoint: str = "https://data.geopf.fr/geocodage/search"
     ign_geocoding_max_requests_per_second: float = 40.0
-    geocoding_azure_fallback: bool = False
+    geocoding_azure_fallback: bool = True
     map_renderer: str = "pydeck"
     request_timeout_seconds: float = 30.0
     auth_mode: str = "password"
@@ -185,7 +185,7 @@ def load_settings(
     if not 0 < ign_geocoding_max_requests_per_second <= 50:
         raise ValueError("IGN_GEOCODING_MAX_REQUESTS_PER_SECOND doit etre compris entre 0 et 50.")
     geocoding_azure_fallback = _configured_bool(
-        "GEOCODING_AZURE_FALLBACK", secrets, default=False
+        "GEOCODING_AZURE_FALLBACK", secrets, default=True
     )
 
     timeout = float(_configured_value("AZURE_MAPS_TIMEOUT_SECONDS", secrets, "30") or "30")

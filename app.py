@@ -27,6 +27,8 @@ from opti_route.config import Settings, load_settings
 from opti_route.data import (
     ALIASES,
     ClientDataError,
+    compose_full_addresses,
+    find_suspicious_encoding,
     list_sheet_names,
     preferred_portfolio_sheet_index,
     read_tabular,
@@ -133,6 +135,124 @@ FIELD_LABELS = {
 }
 
 
+def _address_correction_panel(
+    store: ApplicationStore,
+    user: AuthenticatedUser,
+    current_clients: pd.DataFrame | None,
+    metadata: PortfolioMetadata | None,
+    geocoding_client: IgnGeocodingClient,
+    azure_fallback_client: AzureMapsClient | None,
+) -> None:
+    correction_result = st.session_state.pop("address_correction_result", None)
+    if correction_result is not None:
+        st.success(
+            f"{correction_result['geocoded']} adresse(s) corrigée(s) ont été géocodées."
+        )
+        if correction_result["errors"]:
+            st.warning(
+                f"{len(correction_result['errors'])} adresse(s) restent sans coordonnées. "
+                + " · ".join(correction_result["errors"][:3])
+            )
+    if current_clients is None:
+        return
+
+    missing_mask = current_clients[["latitude", "longitude"]].isna().any(axis=1)
+    unresolved = current_clients.loc[missing_mask].copy()
+    if unresolved.empty:
+        return
+
+    labels = {
+        "client_id": "Référence",
+        "client_name": "Entreprise",
+        "address": "Rue / adresse",
+        "address_2": "Complément 1",
+        "address_3": "Complément 2",
+        "postal_code": "Code postal",
+        "city": "Ville",
+        "country": "Pays",
+    }
+    editable_fields = [
+        "address",
+        "address_2",
+        "address_3",
+        "postal_code",
+        "city",
+        "country",
+    ]
+    with st.expander(
+        f"Corriger et réessayer les {len(unresolved)} adresse(s) non géocodée(s)",
+        expanded=True,
+    ):
+        st.caption(
+            "Modifiez l'adresse, puis relancez la recherche. IGN/BAN est essayé en premier, "
+            "puis Azure Maps seulement si IGN/BAN ne trouve aucun résultat."
+        )
+        editor_source = unresolved.loc[:, list(labels)].rename(columns=labels)
+        editor_source.insert(0, "_portfolio_row", unresolved.index)
+        edited = st.data_editor(
+            editor_source,
+            hide_index=True,
+            use_container_width=True,
+            disabled=["Référence", "Entreprise"],
+            column_config={"_portfolio_row": None},
+            key="address_correction_editor",
+        )
+        if st.button(
+            "Enregistrer les adresses corrigées et réessayer",
+            type="primary",
+            use_container_width=True,
+            key="retry_corrected_addresses",
+        ):
+            corrected_clients = current_clients.copy()
+            edited = edited.set_index("_portfolio_row")
+            for source_field in editable_fields:
+                display_field = labels[source_field]
+                values = edited[display_field].astype("string").str.strip().replace("", pd.NA)
+                corrected_clients.loc[edited.index, source_field] = values.to_numpy()
+            corrected_clients.loc[edited.index, ["latitude", "longitude"]] = pd.NA
+            corrected_clients["full_address"] = compose_full_addresses(corrected_clients)
+            progress_bar = st.progress(0, text="Nouvelle recherche des adresses corrigées…")
+
+            def update_progress(position: int, total: int, company_name: str) -> None:
+                progress_bar.progress(
+                    position / max(total, 1),
+                    text=f"Géocodage {position}/{total} · {company_name}",
+                )
+
+            try:
+                enriched_clients, errors = geocode_missing_clients(
+                    corrected_clients,
+                    geocoding_client,
+                    GeocodeCache(settings.geocode_cache_path),
+                    progress=update_progress,
+                    fallback_client=(
+                        azure_fallback_client if settings.geocoding_azure_fallback else None
+                    ),
+                )
+                store.save_clients(
+                    enriched_clients,
+                    source_name=metadata.source_name if metadata is not None else "portefeuille",
+                    imported_by=user.display_name,
+                )
+            except StorageError as exc:
+                st.error(str(exc))
+                return
+            finally:
+                progress_bar.empty()
+            _load_persistent_app_state.clear()
+            st.session_state.pop("route_plan", None)
+            st.session_state["address_correction_result"] = {
+                "errors": errors,
+                "geocoded": int(
+                    enriched_clients.loc[edited.index, ["latitude", "longitude"]]
+                    .notna()
+                    .all(axis=1)
+                    .sum()
+                ),
+            }
+            st.rerun()
+
+
 def _admin_import_panel(
     store: ApplicationStore,
     user: AuthenticatedUser,
@@ -148,6 +268,14 @@ def _admin_import_panel(
                 f"Source : {metadata.source_name} · Importé par {metadata.imported_by} "
                 f"le {metadata.imported_at.replace('T', ' ')}"
             )
+    _address_correction_panel(
+        store,
+        user,
+        current_clients,
+        metadata,
+        geocoding_client,
+        azure_fallback_client,
+    )
     uploaded = st.file_uploader(
         "Importer et remplacer le portefeuille d'entreprises",
         type=["csv", "xls", "xlsx", "xlsm", "xlsb"],
@@ -235,6 +363,24 @@ def _admin_import_panel(
         st.error(str(exc))
         return
 
+    encoding_issues = find_suspicious_encoding(clients)
+    if not encoding_issues.empty:
+        st.warning(
+            f"{len(encoding_issues)} texte(s) semblent contenir un problème d'encodage. "
+            "Corrigez-les dans le fichier source avant l'import lorsque possible."
+        )
+        encoding_labels = {
+            "client_id": "Référence",
+            "client_name": "Entreprise",
+            "field": "Champ",
+            "value": "Valeur détectée",
+        }
+        issue_display = encoding_issues.rename(columns=encoding_labels)
+        issue_display["Champ"] = issue_display["Champ"].map(FIELD_LABELS).fillna(
+            issue_display["Champ"]
+        )
+        st.dataframe(issue_display, use_container_width=True, hide_index=True, height=210)
+
     geocoded = clients[["latitude", "longitude"]].notna().all(axis=1).sum()
     missing_coordinates = len(clients) - geocoded
     commercial_count = clients["salesperson"].nunique()
@@ -254,9 +400,15 @@ def _admin_import_panel(
                 "l'import."
             )
         else:
+            fallback_description = (
+                "En cas d'échec IGN/BAN, Azure Maps sera essayé automatiquement."
+                if azure_fallback_client is not None and settings.geocoding_azure_fallback
+                else "Azure Maps n'est pas configuré en repli : seules les recherches IGN/BAN seront faites."
+            )
             st.caption(
                 f"{missing_coordinates} entreprise(s) seront géocodées via le service gratuit IGN/BAN. "
-                "Les adresses déjà présentes dans le cache ne génèrent aucun appel externe."
+                "Les adresses déjà présentes dans le cache ne génèrent aucun appel externe. "
+                + fallback_description
             )
     st.caption(
         f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
@@ -339,9 +491,11 @@ def _admin_import_panel(
         if geocode_errors:
             st.warning(
                 f"{len(geocode_errors)} adresse(s) n'ont pas pu être géocodées et restent "
-                "sans coordonnées. "
-                + " · ".join(geocode_errors[:3])
+                "sans coordonnées. Utilisez le panneau de correction des adresses ci-dessus, "
+                "puis relancez leur recherche."
             )
+            with st.expander("Détail des recherches non résolues"):
+                st.write(geocode_errors)
         enriched_workbook = st.session_state.get(f"{result_key}_workbook")
         if enriched_workbook is not None:
             st.download_button(

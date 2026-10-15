@@ -17,6 +17,24 @@ class ClientDataError(ValueError):
 SUPPORTED_SUFFIXES = {".csv", ".xls", ".xlsx", ".xlsm", ".xlsb"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+ADDRESS_COMPONENTS = (
+    "address",
+    "address_2",
+    "address_3",
+    "postal_code",
+    "city",
+    "country",
+)
+ENCODING_CHECK_COLUMNS = (
+    "client_name",
+    "salesperson",
+    "director_name",
+    "address",
+    "address_2",
+    "address_3",
+    "city",
+)
+_SUSPICIOUS_ENCODING = re.compile(r"\ufffd|Ã.|Â.|â[\x80-\xff]|Γ")
 
 
 def validate_uploaded_file(payload: bytes, filename: str) -> None:
@@ -281,6 +299,41 @@ def _fill_sales_hierarchy(clients: pd.DataFrame) -> None:
     )
 
 
+def compose_full_addresses(clients: pd.DataFrame) -> pd.Series:
+    """Construit l'adresse de geocodage a partir de ses composants normalises."""
+
+    components = clients.reindex(columns=ADDRESS_COMPONENTS)
+    return components.apply(
+        lambda row: ", ".join(
+            str(value) for value in row if pd.notna(value) and str(value).strip()
+        ),
+        axis=1,
+    )
+
+
+def find_suspicious_encoding(clients: pd.DataFrame) -> pd.DataFrame:
+    """Retourne les textes qui ressemblent a un encodage endommage, sans les modifier."""
+
+    issues: list[dict[str, str]] = []
+    for column in ENCODING_CHECK_COLUMNS:
+        if column not in clients.columns:
+            continue
+        for index, raw_value in clients[column].items():
+            if pd.isna(raw_value):
+                continue
+            value = str(raw_value).strip()
+            if value and _SUSPICIOUS_ENCODING.search(value):
+                issues.append(
+                    {
+                        "client_id": str(clients.at[index, "client_id"]),
+                        "client_name": str(clients.at[index, "client_name"]),
+                        "field": column,
+                        "value": value,
+                    }
+                )
+    return pd.DataFrame(issues, columns=["client_id", "client_name", "field", "value"])
+
+
 def standardize_clients(
     raw: pd.DataFrame, column_mapping: dict[str, str | None] | None = None
 ) -> pd.DataFrame:
@@ -369,14 +422,7 @@ def standardize_clients(
     clients["longitude"] = pd.to_numeric(
         clients["longitude"].astype("string").str.replace(",", ".", regex=False), errors="coerce"
     )
-    clients["full_address"] = clients[
-        ["address", "address_2", "address_3", "postal_code", "city", "country"]
-    ].apply(
-        lambda row: ", ".join(
-            str(value) for value in row if pd.notna(value) and str(value).strip()
-        ),
-        axis=1,
-    )
+    clients["full_address"] = compose_full_addresses(clients)
     clients["client_name"] = (
         clients["client_name"]
         .replace("", pd.NA)

@@ -7,6 +7,8 @@ import pytest
 
 from opti_route.data import (
     ClientDataError,
+    compose_full_addresses,
+    find_suspicious_encoding,
     list_sheet_names,
     load_clients,
     preferred_portfolio_sheet_index,
@@ -160,6 +162,48 @@ def test_address_only_file_does_not_require_client_or_salesperson() -> None:
     assert clients.loc[0, "client_id"] == "ADRESSE-1"
     assert clients.loc[0, "client_name"] == "8 rue Ampère, 14120, Mondeville, France"
     assert clients.loc[0, "salesperson"] == "Tous"
+
+
+def test_reports_suspicious_text_encoding_without_modifying_the_client() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["C-001", "C-002"],
+            "client_name": ["MARCH" + chr(0x0393) + "r", "Entreprise normale"],
+            "salesperson": ["Alice", "Bob"],
+            "address": ["1 rue du Test", "2 rue du Test"],
+            "address_2": [pd.NA, pd.NA],
+            "address_3": [pd.NA, pd.NA],
+            "city": ["Caen", "Rouen"],
+        }
+    )
+
+    issues = find_suspicious_encoding(clients)
+
+    assert issues.to_dict("records") == [
+        {
+            "client_id": "C-001",
+            "client_name": "MARCH" + chr(0x0393) + "r",
+            "field": "client_name",
+            "value": "MARCH" + chr(0x0393) + "r",
+        }
+    ]
+
+
+def test_rebuilds_full_address_after_manual_correction() -> None:
+    clients = pd.DataFrame(
+        {
+            "address": ["9 ter avenue de Lyon"],
+            "address_2": [pd.NA],
+            "address_3": [pd.NA],
+            "postal_code": ["31500"],
+            "city": ["Toulouse"],
+            "country": ["France"],
+        }
+    )
+
+    assert compose_full_addresses(clients).tolist() == [
+        "9 ter avenue de Lyon, 31500, Toulouse, France"
+    ]
 
 
 def test_reads_workbook_sheet_and_custom_header_row() -> None:

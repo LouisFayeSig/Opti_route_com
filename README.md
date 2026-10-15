@@ -152,7 +152,7 @@ AZURE_MAPS_URI = "https://atlas.microsoft.com"
 AZURE_MAPS_SUBSCRIPTION_KEY = "votre-cle-azure-maps"
 IGN_GEOCODING_ENDPOINT = "https://data.geopf.fr/geocodage/search"
 IGN_GEOCODING_MAX_REQUESTS_PER_SECOND = "40"
-GEOCODING_AZURE_FALLBACK = "false"
+GEOCODING_AZURE_FALLBACK = "true"
 MAP_RENDERER = "pydeck"
 ```
 
@@ -220,9 +220,14 @@ sont facultatives : au moment où l'administrateur enregistre un import, les lig
 pas sont géocodées par le service public IGN / Base Adresse Nationale et mises en cache dans
 `.cache/geocoding.sqlite3`. L'application se limite à 40 appels par seconde, sous la limite publique
 de 50 appels/IP/seconde. Le portefeuille enrichi est alors stocké ; les tournées et le calque ne
-relancent donc pas de géocodage pour ces clients. `GEOCODING_AZURE_FALLBACK=false` évite tout appel
-Azure Maps pour les adresses introuvables ; l'administrateur peut l'activer explicitement si un repli
-payant est souhaité.
+relancent donc pas de géocodage pour ces clients. En cas d'échec IGN/BAN, Azure Maps est sollicité
+en repli lorsqu'il est configuré (`GEOCODING_AZURE_FALLBACK=true`) ; il n'est jamais appelé pour une
+adresse déjà géocodée ou retrouvée dans le cache.
+
+Lorsqu'une adresse reste introuvable après les deux recherches, l'administrateur peut la corriger
+directement depuis le panneau d'import, puis relancer uniquement les adresses concernées. L'import
+signale aussi les caractères pouvant indiquer un encodage endommagé, sans modifier automatiquement
+les libellés : la correction doit être reportée dans le fichier source.
 
 ### Portefeuille final `Liste_client_def.xlsx`
 
