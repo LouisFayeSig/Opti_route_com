@@ -130,13 +130,20 @@ AZURE_SUBSCRIPTION_ID  = ID de l'abonnement SIG France
 ```
 
 L'identité GitHub doit disposer de `AcrPush` sur `CrOptiroute` et de `Contributor` sur la seule
-ressource Container App `app-optiroute`. Elle doit avoir une crédential fédérée OIDC limitée à :
+ressource Container App `app-optiroute`. Dans la ressource identité managée, créer une crédential
+fédérée OIDC avec le scénario **GitHub Actions deploying Azure resources** et les valeurs :
 
 ```text
-issuer   = https://token.actions.githubusercontent.com
-audience = api://AzureADTokenExchange
-subject  = repo:LouisFayeSig/Opti_route_com:ref:refs/heads/main
+Organization = LouisFayeSig
+Repository   = Opti_route_com
+Entity type  = Environment
+Environment  = production
+Name         = github-production
 ```
+
+Azure remplit automatiquement `issuer`, `audience` et le sujet
+`repo:LouisFayeSig/Opti_route_com:environment:production`. Dans GitHub, protéger l'environnement
+`production` avec un approbateur et limiter les déploiements à `main` et aux tags de release.
 
 Ne pas donner `AcrPush` à l'identité runtime `id-optiroute` : elle conserve uniquement `AcrPull`,
 `Storage Blob Data Contributor` et `Key Vault Secrets User`.
@@ -168,6 +175,29 @@ Avant le premier import, préparer les données suivantes :
 
 Le portefeuille importé doit posséder une colonne `Code UG`. Les Object IDs sont ceux des comptes
 utilisateurs Entra, et non les Client IDs des applications ou identités managées.
+
+Le script `scripts/export_entra_group_members.ps1` extrait automatiquement les membres directs des
+quatre groupes Opti Route, avec leur Object ID, dans `exports/opti-route-entraid-users.csv`. Il est
+strictement en lecture et ne modifie aucun groupe. Le dossier `exports/` est ignoré par Git car le
+CSV contient des données personnelles.
+
+Avant le premier lancement, installer les modules Graph (sans privilège administrateur local) :
+
+```powershell
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+Install-Module Microsoft.Graph.Groups -Scope CurrentUser
+```
+
+Puis lancer :
+
+```powershell
+.\scripts\export_entra_group_members.ps1
+```
+
+Le consentement Entra en lecture aux scopes délégués `GroupMember.Read.All` et
+`User.ReadBasic.All` peut devoir être accordé par l'équipe identité. Le script signale les
+utilisateurs présents dans plusieurs groupes de rôle, une configuration à corriger avant
+production.
 
 ### Informations à relever pour IAM
 

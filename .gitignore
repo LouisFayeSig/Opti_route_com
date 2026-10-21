@@ -2,6 +2,7 @@ data/
 .env
 .streamlit/secrets.toml
 .venv/
+exports/
 .cache/
 __pycache__/
 *.py[cod]
