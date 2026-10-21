@@ -3,7 +3,7 @@
 ## 1. Ressources minimales
 
 - Azure Container Registry Basic ;
-- Azure Container Apps en consommation, avec une identité managée système ;
+- Azure Container Apps en consommation, avec l'identité managée utilisateur `id-optiroute` ;
 - un compte StorageV2 et un conteneur Blob privé `opti-route-private` ;
 - une inscription d'application Microsoft Entra ID mono-tenant ;
 - Azure Key Vault pour le secret OIDC et le secret de cookie ;
@@ -111,3 +111,67 @@ Augmenter ensuite le maximum après un test de charge et de reconnexion WebSocke
 La sonde HTTP est disponible sur `/_stcore/health`. Les logs ne doivent contenir ni adresses clients,
 ni claims complets, ni secrets. Conserver les logs applicatifs 30 jours et les opérations
 administratives Storage selon la politique d'audit de l'entreprise.
+
+## 8. GitHub Actions (image et déploiement)
+
+Le workflow `.github/workflows/deploy-container-app.yml` se déclenche à chaque tag Git commençant
+par `v` (par exemple `v1.0.0`) ou manuellement. Il construit l'image depuis le `Dockerfile`, publie
+deux tags immuables dans `croptiroute.azurecr.io` : le tag de version et `sha-<commit>`, puis met à
+jour `app-optiroute` si celle-ci existe.
+
+Le workflow ne contient aucun secret Azure. Créer dans **GitHub > Settings > Secrets and variables
+> Actions** les trois secrets suivants, associés à une identité de déploiement distincte de
+`id-optiroute` :
+
+```text
+AZURE_CLIENT_ID        = Client ID de l'identité GitHub de déploiement
+AZURE_TENANT_ID        = Tenant ID Microsoft Entra
+AZURE_SUBSCRIPTION_ID  = ID de l'abonnement SIG France
+```
+
+L'identité GitHub doit disposer de `AcrPush` sur `CrOptiroute` et de `Contributor` sur la seule
+ressource Container App `app-optiroute`. Elle doit avoir une crédential fédérée OIDC limitée à :
+
+```text
+issuer   = https://token.actions.githubusercontent.com
+audience = api://AzureADTokenExchange
+subject  = repo:LouisFayeSig/Opti_route_com:ref:refs/heads/main
+```
+
+Ne pas donner `AcrPush` à l'identité runtime `id-optiroute` : elle conserve uniquement `AcrPull`,
+`Storage Blob Data Contributor` et `Key Vault Secrets User`.
+
+Le tag `v1.0.0` ayant été créé avant l'ajout du workflow, lancer le premier build par
+**Actions > Build and deploy Opti Route > Run workflow**, avec `image_tag` et `source_ref` égaux
+à `v1.0.0`. Cela construit exactement le commit de la release, même si `main` a évolué depuis.
+
+## 9. Checklist opérateur avant la Container App
+
+### Stockage `stockageoptiroute`
+
+- Réseau : conserver `Public network access = Enabled` tant qu'aucun VNet / Private Endpoint n'est
+  en place ;
+- Configuration : `Allow Blob anonymous access = Disabled`, HTTPS obligatoire et TLS 1.2 minimum ;
+- Data protection : activer le versioning Blob, le soft-delete Blob et conteneur pendant 30 jours ;
+- créer le conteneur privé `opti-route-private` ;
+- n'utiliser ni clé de compte, ni `AZURE_STORAGE_CONNECTION_STRING` en production.
+
+### Données métier et habilitations
+
+Avant le premier import, préparer les données suivantes :
+
+| Rôle | Donnée à saisir dans l'administration Opti Route |
+| --- | --- |
+| ATC | Object ID Entra et Code ATC |
+| RAG | Object ID Entra et adresse e-mail RAG |
+| DR | Object ID Entra et un ou plusieurs Code UG |
+
+Le portefeuille importé doit posséder une colonne `Code UG`. Les Object IDs sont ceux des comptes
+utilisateurs Entra, et non les Client IDs des applications ou identités managées.
+
+### Informations à relever pour IAM
+
+Depuis la ressource `id-optiroute`, relever le `Principal ID`, `Client ID` et `Resource ID`.
+Le premier sert aux attributions RBAC, le dernier sert à attacher l'identité à la Container App.
+Depuis l'ACR, relever le chemin exact de l'image et son tag, par exemple
+`croptiroute.azurecr.io/opti-route:v1.0.0`.
