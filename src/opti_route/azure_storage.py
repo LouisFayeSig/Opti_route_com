@@ -182,7 +182,8 @@ class AzureBlobAppStore:
     @staticmethod
     def _profile_from_document(document: dict[str, object]) -> UserAccessProfile:
         agencies_value = document.get("agencies", [])
-        if not isinstance(agencies_value, list):
+        ugs_value = document.get("ugs", [])
+        if not isinstance(agencies_value, list) or not isinstance(ugs_value, list):
             raise StorageError("Une habilitation Azure est invalide.")
         return UserAccessProfile(
             principal_id=str(document.get("principal_id", "")),
@@ -203,12 +204,13 @@ class AzureBlobAppStore:
                 if document.get("atc_name") is not None
                 else None
             ),
-            director_email=(
-                str(document["director_email"])
-                if document.get("director_email") is not None
+            rag_email=(
+                str(document.get("rag_email") or document.get("director_email"))
+                if document.get("rag_email") is not None or document.get("director_email") is not None
                 else None
             ),
             agencies=tuple(str(value) for value in agencies_value),
+            ugs=tuple(str(value) for value in ugs_value),
             updated_at=str(document.get("updated_at", "")),
             updated_by=str(document.get("updated_by", "")),
         ).validated()
@@ -256,13 +258,14 @@ class AzureBlobAppStore:
             agencies=profile.agencies,
             atc_email=profile.atc_email,
             atc_name=profile.atc_name,
-            director_email=profile.director_email,
+            rag_email=profile.rag_email,
+            ugs=profile.ugs,
             updated_at=datetime.now(UTC).isoformat(timespec="seconds"),
             updated_by=updated_by.strip()[:255] or "Administrateur",
         )
         self._write_document(
             self._profile_blob_name(stored_profile.principal_id),
-            {"schema_version": 1, **asdict(stored_profile)},
+            {"schema_version": 2, **asdict(stored_profile)},
         )
         return stored_profile
 

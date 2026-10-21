@@ -86,7 +86,7 @@ dans la base applicative. Exemple (à placer uniquement dans `.env` ou dans les 
 l'hébergeur) :
 
 ```dotenv
-LOCAL_TEST_ACCOUNTS_JSON=[{"username":"test-atc","password":"mot-de-passe-long","display_name":"Test ATC","role":"atc","atc_code":"31-02-004"},{"username":"test-directeur","password":"autre-mot-de-passe-long","display_name":"Test Directeur","role":"director","director_email":"c.vernay@litt.fr"}]
+LOCAL_TEST_ACCOUNTS_JSON=[{"username":"test-atc","password":"mot-de-passe-long","display_name":"Test ATC","role":"atc","atc_code":"31-02-004"},{"username":"test-rag","password":"autre-mot-de-passe-long","display_name":"Test RAG","role":"rag","rag_email":"c.vernay@litt.fr"},{"username":"test-dr","password":"un-autre-mot-de-passe-long","display_name":"Test DR","role":"dr","ugs":["10","20"]}]
 ```
 
 Ces comptes sont temporaires : les retirer des secrets dès le basculement vers `AUTH_MODE=entra`.
@@ -102,22 +102,25 @@ Ces comptes sont temporaires : les retirer des secrets dès le basculement vers 
    pour `cookie_secret`.
 5. Définir `AUTH_MODE=entra` dans `.env`, puis redémarrer Streamlit.
 
-L'autorisation utilise trois **App Roles Entra**, présents dans le claim signé `roles` du jeton :
+L'autorisation utilise quatre **App Roles Entra**, présents dans le claim signé `roles` du jeton
+et alignés sur les groupes Intra :
 
-- `OptiRoute.ATC` : accès au seul code ATC configuré dans l'application ;
-- `OptiRoute.Director` : accès à tous les ATC des agences configurées ;
-- `OptiRoute.Admin` : accès global, import du portefeuille, habilitations et paramètres.
+- `D-FR-APP-OPTIROUTE-ATC` : accès au seul code ATC configuré dans l'application ;
+- `D-FR-APP-OPTIROUTE-RAG` : accès aux portefeuilles rattachés à son e-mail N+1 ;
+- `D-FR-APP-OPTIROUTE-DR` : accès à toutes les agences des UG configurées ;
+- `D-FR-APP-OPTIROUTE-ADMIN` : accès global, import du portefeuille, habilitations et paramètres.
 
-Le fichier [deployment/entra-app-roles.json](deployment/entra-app-roles.json) contient les trois
+Le fichier [deployment/entra-app-roles.json](deployment/entra-app-roles.json) contient les quatre
 définitions prêtes à reporter dans le manifeste de l'inscription d'application. Dans **Enterprise
 applications → Utilisateurs et groupes**, attribuer exactement un de ces rôles à chaque utilisateur
 ou groupe autorisé. Configurer ensuite :
 
 ```dotenv
 ENTRA_TENANT_ID=identifiant-du-tenant
-ENTRA_ROLE_ATC=OptiRoute.ATC
-ENTRA_ROLE_DIRECTOR=OptiRoute.Director
-ENTRA_ROLE_ADMIN=OptiRoute.Admin
+ENTRA_ROLE_ATC=D-FR-APP-OPTIROUTE-ATC
+ENTRA_ROLE_RAG=D-FR-APP-OPTIROUTE-RAG
+ENTRA_ROLE_DR=D-FR-APP-OPTIROUTE-DR
+ENTRA_ROLE_ADMIN=D-FR-APP-OPTIROUTE-ADMIN
 ```
 
 L'application refuse par défaut un jeton sans rôle reconnu, provenant d'un autre tenant ou contenant
@@ -125,8 +128,8 @@ plusieurs rôles Opti Route. Chaque compte doit donc recevoir exactement un rôl
 Les anciennes listes `ADMIN_EMAILS` ne donnent plus aucun droit en mode Entra.
 
 Après la première connexion de l'administrateur, utiliser l'onglet **Administration →
-Habilitations** pour associer l'Object ID Entra (`oid`) de chaque ATC à son code ATC, et chaque
-directeur à une ou plusieurs agences. Le rôle signé par Entra et le rôle attendu dans l'habilitation
+Habilitations** pour associer l'Object ID Entra (`oid`) de chaque ATC à son code ATC, chaque
+RAG à son e-mail N+1 et chaque DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'habilitation
 doivent correspondre ; une incohérence bloque l'accès. L'adresse e-mail n'est pas utilisée comme clé
 d'autorisation, car elle peut changer.
 
@@ -204,6 +207,7 @@ puis permet à l'administrateur de corriger la correspondance :
 | Nom | `Client`, `Raison sociale`, `Nom compte` |
 | Code ATC | `Code ATC`, `Matricule ATC`, `Code commercial` |
 | Commercial | `Commercial`, `Vendeur`, `Responsable commercial` |
+| UG | `Code UG`, `UG`, `Unité de gestion` |
 | Agence | `Agence`, `Nom agence`, `Agence de référence` |
 | Adresse agence | `Adresse agence`, `Adresse du site` |
 | Adresse | `Adresse`, `Rue`, `Adresse 1` |
@@ -239,15 +243,16 @@ La feuille **Listing client** est reconnue sans correspondance manuelle :
 | `RUE`, `cp`, `ville` | adresse a geocoder |
 | `Nom`, `code`, `Email Nom (E)` | commercial, reference ATC complete et perimetre |
 | `Code UG`, `code ATC` | informations de decomposition de la reference : UG et portefeuille |
-| `N+1`, `Email N+1 (H)` | directeur et portefeuille de ses commerciaux |
+| `N+1`, `Email N+1 (H)` | RAG et portefeuille de ses commerciaux |
 
 Le N+1 et son e-mail peuvent etre renseignes une seule fois par commercial : ils sont
 propages a toutes les lignes de son portefeuille a l'import. Dans **Administration >
 Habilitations**, l'administrateur associe toujours l'Object ID Entra a un collaborateur,
-puis selectionne son e-mail ATC ou directeur issu du portefeuille. Le role signe par
+Puis sélectionne son e-mail ATC ou RAG issu du portefeuille, ou les UG d'un DR. Le rôle signé par
 Entra reste obligatoire ; l'e-mail importe sert a definir le perimetre, pas a authentifier
-un utilisateur. Un ATC ne voit que les clients de son e-mail professionnel et un directeur
-voit les clients des commerciaux rattaches a son e-mail N+1. L'ancien filtrage par agence
+un utilisateur. Un ATC ne voit que les clients de son e-mail professionnel, un RAG
+voit les clients des commerciaux rattachés à son e-mail N+1 et un DR toutes les agences
+des UG qui lui sont attribuées. L'ancien filtrage par agence
 reste disponible pour les portefeuilles historiques qui ne contiennent pas ces e-mails.
 
 Pour `Liste_client_def.xlsx`, la reference utilisee par Opti Route est la colonne `code`

@@ -18,7 +18,8 @@ class LocalTestAccount:
     display_name: str
     role: str
     atc_code: str | None = None
-    director_email: str | None = None
+    rag_email: str | None = None
+    ugs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,10 @@ class Settings:
     local_test_accounts: tuple[LocalTestAccount, ...] = ()
     admin_emails: tuple[str, ...] = ()
     entra_tenant_id: str | None = None
-    entra_atc_role: str = "OptiRoute.ATC"
-    entra_director_role: str = "OptiRoute.Director"
-    entra_admin_role: str = "OptiRoute.Admin"
+    entra_atc_role: str = "D-FR-APP-OPTIROUTE-ATC"
+    entra_rag_role: str = "D-FR-APP-OPTIROUTE-RAG"
+    entra_dr_role: str = "D-FR-APP-OPTIROUTE-DR"
+    entra_admin_role: str = "D-FR-APP-OPTIROUTE-ADMIN"
     app_storage_backend: str = "sqlite"
     app_storage_path: Path = Path(".cache/opti_route.sqlite3")
     azure_storage_account_url: str | None = None
@@ -123,19 +125,30 @@ def _local_test_accounts(value: str | None) -> tuple[LocalTestAccount, ...]:
         password = str(entry.get("password") or "")
         display_name = str(entry.get("display_name") or username).strip()
         role = str(entry.get("role") or "").strip().casefold()
+        if role == "director":
+            role = "rag"
         atc_code = str(entry.get("atc_code") or "").strip() or None
-        director_email = str(entry.get("director_email") or "").strip().casefold() or None
+        # director_email est conservé comme alias de migration des anciens fichiers locaux.
+        rag_email = str(
+            entry.get("rag_email") or entry.get("director_email") or ""
+        ).strip().casefold() or None
+        raw_ugs = entry.get("ugs", [])
+        if not isinstance(raw_ugs, list) or not all(isinstance(value, str) for value in raw_ugs):
+            raise TypeError("ugs doit contenir une liste de codes UG.")
+        ugs = tuple(dict.fromkeys(value.strip() for value in raw_ugs if value.strip()))
         normalized_username = username.casefold()
         if not username or not password or not display_name:
             raise ValueError("Chaque compte de test local doit avoir un identifiant et un mot de passe.")
         if normalized_username in usernames:
             raise ValueError("Les identifiants des comptes de test locaux doivent être distincts.")
-        if role not in {"atc", "director"}:
-            raise ValueError("Le rôle d'un compte de test local doit être atc ou director.")
+        if role not in {"atc", "rag", "dr"}:
+            raise ValueError("Le rôle d'un compte de test local doit être atc, rag ou dr.")
         if role == "atc" and not atc_code:
             raise ValueError("Un compte de test ATC doit renseigner atc_code.")
-        if role == "director" and not director_email:
-            raise ValueError("Un compte de test directeur doit renseigner director_email.")
+        if role == "rag" and not rag_email:
+            raise ValueError("Un compte de test RAG doit renseigner rag_email.")
+        if role == "dr" and not ugs:
+            raise ValueError("Un compte de test DR doit renseigner au moins une UG.")
         usernames.add(normalized_username)
         accounts.append(
             LocalTestAccount(
@@ -144,7 +157,8 @@ def _local_test_accounts(value: str | None) -> tuple[LocalTestAccount, ...]:
                 display_name=display_name,
                 role=role,
                 atc_code=atc_code if role == "atc" else None,
-                director_email=director_email if role == "director" else None,
+                rag_email=rag_email if role == "rag" else None,
+                ugs=ugs if role == "dr" else (),
             )
         )
     return tuple(accounts)
@@ -209,23 +223,29 @@ def load_settings(
         value.strip().casefold() for value in admin_emails_value.split(",") if value.strip()
     )
     entra_tenant_id = _configured_value("ENTRA_TENANT_ID", secrets)
-    entra_atc_role = _configured_value("ENTRA_ROLE_ATC", secrets, "OptiRoute.ATC")
-    entra_director_role = _configured_value(
-        "ENTRA_ROLE_DIRECTOR", secrets, "OptiRoute.Director"
+    entra_atc_role = _configured_value("ENTRA_ROLE_ATC", secrets, "D-FR-APP-OPTIROUTE-ATC")
+    entra_rag_role = (
+        _configured_value("ENTRA_ROLE_RAG", secrets)
+        # Compatibilité de configuration durant le basculement Director -> RAG.
+        or _configured_value("ENTRA_ROLE_DIRECTOR", secrets)
+        or "D-FR-APP-OPTIROUTE-RAG"
     )
-    entra_admin_role = _configured_value("ENTRA_ROLE_ADMIN", secrets, "OptiRoute.Admin")
+    entra_dr_role = _configured_value("ENTRA_ROLE_DR", secrets, "D-FR-APP-OPTIROUTE-DR")
+    entra_admin_role = _configured_value("ENTRA_ROLE_ADMIN", secrets, "D-FR-APP-OPTIROUTE-ADMIN")
     assert entra_atc_role is not None
-    assert entra_director_role is not None
+    assert entra_rag_role is not None
+    assert entra_dr_role is not None
     assert entra_admin_role is not None
     configured_entra_roles = (
         entra_atc_role.strip(),
-        entra_director_role.strip(),
+        entra_rag_role.strip(),
+        entra_dr_role.strip(),
         entra_admin_role.strip(),
     )
     if not all(configured_entra_roles) or len(
         {value.casefold() for value in configured_entra_roles}
     ) != len(configured_entra_roles):
-        raise ValueError("Les trois App Roles Entra doivent être non vides et distincts.")
+        raise ValueError("Les quatre App Roles Entra doivent être non vides et distincts.")
     configured_usernames = [
         value.strip().casefold()
         for value in (auth_username, admin_username)
@@ -274,7 +294,8 @@ def load_settings(
         admin_emails=admin_emails,
         entra_tenant_id=entra_tenant_id.strip() if entra_tenant_id else None,
         entra_atc_role=entra_atc_role.strip(),
-        entra_director_role=entra_director_role.strip(),
+        entra_rag_role=entra_rag_role.strip(),
+        entra_dr_role=entra_dr_role.strip(),
         entra_admin_role=entra_admin_role.strip(),
         app_storage_backend=storage_backend,
         app_storage_path=storage_path,

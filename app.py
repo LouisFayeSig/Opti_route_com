@@ -16,7 +16,8 @@ if str(SRC_ROOT) not in sys.path:
 from opti_route.access import AccessDeniedError, authorize_portfolio
 from opti_route.auth import (
     ROLE_ATC,
-    ROLE_DIRECTOR,
+    ROLE_DR,
+    ROLE_RAG,
     AuthenticatedUser,
     render_account_controls,
     require_authentication,
@@ -120,8 +121,9 @@ FIELD_LABELS = {
     "salesperson_code": "Code ATC",
     "salesperson": "Commercial",
     "salesperson_email": "E-mail du commercial",
-    "director_name": "N+1 / directeur",
-    "director_email": "E-mail du directeur",
+    "rag_name": "N+1 / RAG",
+    "rag_email": "E-mail du RAG",
+    "ug": "UG",
     "agency": "Agence",
     "agency_address": "Adresse agence",
     "address": "Adresse / rue",
@@ -385,10 +387,10 @@ def _admin_import_panel(
     missing_coordinates = len(clients) - geocoded
     commercial_count = clients["salesperson"].nunique()
     atc_scopes = clients[
-        ["salesperson_code", "salesperson", "salesperson_email", "director_email"]
+        ["salesperson_code", "salesperson", "salesperson_email", "rag_email"]
     ].drop_duplicates()
     atc_with_email = int(atc_scopes["salesperson_email"].notna().sum())
-    atc_with_director = int(atc_scopes["director_email"].notna().sum())
+    atc_with_rag = int(atc_scopes["rag_email"].notna().sum())
     st.caption(
         f"{len(clients)} entreprises · {commercial_count} commerciaux · {geocoded} déjà géocodées"
     )
@@ -412,7 +414,7 @@ def _admin_import_panel(
             )
     st.caption(
         f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
-        f"et {atc_with_director}/{len(atc_scopes)} rattaches a un directeur."
+        f"et {atc_with_rag}/{len(atc_scopes)} rattachés à un RAG."
     )
     if st.button(
         (
@@ -562,8 +564,9 @@ def _admin_access_panel(
 ) -> None:
     st.caption(
         "Les rôles sont attribués dans Microsoft Entra ID. Ce panneau définit uniquement "
-        "le périmètre de données des ATC et des directeurs."
+        "le périmètre de données des ATC, RAG et DR."
     )
+    role_labels = {ROLE_ATC: "ATC", ROLE_RAG: "RAG", ROLE_DR: "DR"}
     profiles = store.list_access_profiles()
     if profiles:
         profile_table = pd.DataFrame(
@@ -571,12 +574,13 @@ def _admin_access_panel(
                 {
                     "Collaborateur": profile.display_name,
                     "Object ID Entra": profile.principal_id,
-                    "Rôle attendu": "ATC" if profile.role == ROLE_ATC else "Directeur",
+                    "Rôle attendu": role_labels[profile.role],
                     "Code ATC": profile.atc_code or "",
                     "E-mail ATC": profile.atc_email or "",
                     "Commercial ATC": profile.atc_name or "",
-                    "E-mail directeur": profile.director_email or "",
-                    "Agences": ", ".join(profile.agencies),
+                    "E-mail RAG": profile.rag_email or "",
+                    "UG DR": ", ".join(profile.ugs),
+                    "Agences héritées": ", ".join(profile.agencies),
                     "Modifié le": profile.updated_at.replace("T", " "),
                 }
                 for profile in profiles
@@ -584,7 +588,7 @@ def _admin_access_panel(
         )
         st.dataframe(profile_table, hide_index=True, use_container_width=True)
     else:
-        st.info("Aucune habilitation ATC ou directeur n'est encore configurée.")
+        st.info("Aucune habilitation ATC, RAG ou DR n'est encore configurée.")
 
     st.markdown("##### Ajouter ou mettre à jour une habilitation")
     st.caption(
@@ -603,7 +607,7 @@ def _admin_access_panel(
     )
     role_label = st.radio(
         "Rôle attendu",
-        ["ATC", "Directeur"],
+        ["ATC", "RAG", "DR"],
         horizontal=True,
         key="access_role",
     )
@@ -611,8 +615,9 @@ def _admin_access_panel(
     atc_rows = pd.DataFrame(
         columns=["salesperson_code", "salesperson", "salesperson_email"]
     )
-    director_rows = pd.DataFrame(columns=["director_name", "director_email"])
+    rag_rows = pd.DataFrame(columns=["rag_name", "rag_email"])
     agencies: list[str] = []
+    ugs: list[str] = []
     if clients is not None:
         atc_rows = (
             clients.reindex(
@@ -623,13 +628,13 @@ def _admin_access_panel(
             .drop_duplicates()
             .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
         )
-        director_rows = (
-            clients.reindex(columns=["director_name", "director_email"])
-            .dropna(subset=["director_email"])
+        rag_rows = (
+            clients.reindex(columns=["rag_name", "rag_email"])
+            .dropna(subset=["rag_email"])
             .fillna("")
             .astype(str)
             .drop_duplicates()
-            .sort_values(["director_name", "director_email"], key=lambda values: values.str.casefold())
+            .sort_values(["rag_name", "rag_email"], key=lambda values: values.str.casefold())
         )
         agencies = sorted(
             {
@@ -639,12 +644,17 @@ def _admin_access_panel(
             },
             key=str.casefold,
         )
+        ugs = sorted(
+            {value.strip() for value in clients["ug"].fillna("").astype(str) if value.strip()},
+            key=str.casefold,
+        )
 
     selected_atc_code: str | None = None
     selected_atc_email: str | None = None
     selected_atc_name: str | None = None
-    selected_director_email: str | None = None
+    selected_rag_email: str | None = None
     selected_agencies: tuple[str, ...] = ()
+    selected_ugs: tuple[str, ...] = ()
     if role_label == "ATC":
         atc_options = atc_rows.index.tolist()
         if atc_options:
@@ -666,32 +676,35 @@ def _admin_access_panel(
             ).strip() or None
         else:
             st.warning("Importez d'abord un portefeuille contenant des codes ATC.")
-    else:
-        if not director_rows.empty:
-            director_options = director_rows.index.tolist()
-            selected_director_index = st.selectbox(
-                "Directeur et e-mail",
-                director_options,
+    elif role_label == "RAG":
+        if not rag_rows.empty:
+            rag_options = rag_rows.index.tolist()
+            selected_rag_index = st.selectbox(
+                "RAG et e-mail",
+                rag_options,
                 format_func=lambda index: (
-                    f"{director_rows.at[index, 'director_name']} · "
-                    f"{director_rows.at[index, 'director_email']}"
+                    f"{rag_rows.at[index, 'rag_name']} · {rag_rows.at[index, 'rag_email']}"
                 ),
-                key="access_director_scope",
+                key="access_rag_scope",
             )
-            selected_director_email = str(
-                director_rows.at[selected_director_index, "director_email"]
-            ).strip() or None
-            st.caption("Le directeur verra les portefeuilles associes a cet e-mail N+1.")
-        if director_rows.empty:
+            selected_rag_email = str(rag_rows.at[selected_rag_index, "rag_email"]).strip() or None
+            st.caption("Le RAG verra les portefeuilles associés à cet e-mail N+1.")
+        else:
             selected_agencies = tuple(
                 st.multiselect(
-                    "Agences autorisées (portefeuille historique)",
+                    "Agences autorisées (portefeuille historique sans e-mail RAG)",
                     agencies,
                     key="access_agency_scope",
                 )
             )
             if not agencies:
                 st.warning("Importez d'abord un portefeuille contenant des agences.")
+    else:
+        selected_ugs = tuple(
+            st.multiselect("UG autorisées", ugs, key="access_ug_scope")
+        )
+        if not ugs:
+            st.warning("Importez d'abord un portefeuille contenant les codes UG.")
 
     if st.button(
         "Enregistrer l'habilitation",
@@ -704,12 +717,13 @@ def _admin_access_panel(
                 UserAccessProfile(
                     principal_id=principal_id,
                     display_name=display_name,
-                    role=ROLE_ATC if role_label == "ATC" else ROLE_DIRECTOR,
+                    role={"ATC": ROLE_ATC, "RAG": ROLE_RAG, "DR": ROLE_DR}[role_label],
                     atc_code=selected_atc_code,
                     atc_email=selected_atc_email,
                     atc_name=selected_atc_name,
-                    director_email=selected_director_email,
+                    rag_email=selected_rag_email,
                     agencies=selected_agencies,
+                    ugs=selected_ugs,
                 ),
                 updated_by=user.display_name,
             )
@@ -851,7 +865,8 @@ def _configured_local_test_profile(
         display_name=account.display_name,
         role=account.role,
         atc_code=account.atc_code,
-        director_email=account.director_email,
+        rag_email=account.rag_email,
+        ugs=account.ugs,
     ).validated()
 
 

@@ -2,28 +2,37 @@
   {
     "allowedMemberTypes": ["User"],
     "description": "Acces limite au portefeuille rattache au code ATC.",
-    "displayName": "Opti Route - ATC",
+    "displayName": "D-FR-APP-OPTIROUTE-ATC",
     "id": "6ef6dc2e-bf79-4ec6-bc31-61fcd9b270d1",
     "isEnabled": true,
     "origin": "Application",
-    "value": "OptiRoute.ATC"
+    "value": "D-FR-APP-OPTIROUTE-ATC"
   },
   {
     "allowedMemberTypes": ["User"],
-    "description": "Acces aux portefeuilles des ATC des agences autorisees.",
-    "displayName": "Opti Route - Directeur",
+    "description": "Acces RAG aux portefeuilles rattaches a son e-mail N+1.",
+    "displayName": "D-FR-APP-OPTIROUTE-RAG",
     "id": "a44dde39-5612-45ac-bf1b-35299f6a5529",
     "isEnabled": true,
     "origin": "Application",
-    "value": "OptiRoute.Director"
+    "value": "D-FR-APP-OPTIROUTE-RAG"
+  },
+  {
+    "allowedMemberTypes": ["User"],
+    "description": "Acces DR aux portefeuilles des UG autorisees.",
+    "displayName": "D-FR-APP-OPTIROUTE-DR",
+    "id": "7a0ae8a4-99c7-4b03-9a2c-187de9bd53a7",
+    "isEnabled": true,
+    "origin": "Application",
+    "value": "D-FR-APP-OPTIROUTE-DR"
   },
   {
     "allowedMemberTypes": ["User"],
     "description": "Administration du portefeuille, des habilitations et des parametres.",
-    "displayName": "Opti Route - Administrateur",
+    "displayName": "D-FR-APP-OPTIROUTE-ADMIN",
     "id": "f6087673-2f96-4d05-9f51-7b1fb1cf65b0",
     "isEnabled": true,
     "origin": "Application",
-    "value": "OptiRoute.Admin"
+    "value": "D-FR-APP-OPTIROUTE-ADMIN"
   }
 ]

@@ -86,8 +86,8 @@ def test_recognizes_final_listing_contract_and_propagates_manager_scope() -> Non
         "salesperson_code": "code ATC",
         "salesperson": "Nom",
         "salesperson_email": "Email Nom (E)",
-        "director_name": "N+1",
-        "director_email": "Email N+1 (H)",
+        "rag_name": "N+1",
+        "rag_email": "Email N+1 (H)",
         "agency": "Code Agence",
         "address": "RUE",
         "postal_code": "cp",
@@ -95,9 +95,9 @@ def test_recognizes_final_listing_contract_and_propagates_manager_scope() -> Non
     }
     assert clients.loc[0, "full_address"] == "1 rue A, 14000, Caen, France"
     assert clients.loc[0, "salesperson_email"] == "alice@example.test"
-    assert clients.loc[0, "director_name"] == "Directrice Alice"
-    assert clients.loc[0, "director_email"] == "manager.a@example.test"
-    assert clients.loc[2, "director_email"] == "manager.b@example.test"
+    assert clients.loc[0, "rag_name"] == "Directrice Alice"
+    assert clients.loc[0, "rag_email"] == "manager.a@example.test"
+    assert clients.loc[2, "rag_email"] == "manager.b@example.test"
 
 
 def test_recognizes_listing_client_def_complete_portfolio_code() -> None:
@@ -123,6 +123,7 @@ def test_recognizes_listing_client_def_complete_portfolio_code() -> None:
     assert mapping["salesperson_code"] == "code"
     assert clients.loc[0, "salesperson_code"] == "10-03-82"
     assert clients.loc[0, "agency"] == "10-03"
+    assert clients.loc[0, "ug"] == "10"
 
 
 def test_manual_mapping_accepts_unknown_column_names() -> None:

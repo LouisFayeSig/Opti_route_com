@@ -75,7 +75,7 @@ def _portfolio_for_local_test_accounts() -> pd.DataFrame:
                 "m.trillaudstbrieuc@litt.fr",
                 "a.lourenco@litt.fr",
             ],
-            "director_email": [
+            "rag_email": [
                 "m.lecarpentier@litt.fr",
                 "c.vernay@litt.fr",
                 "c.vernay@litt.fr",
@@ -253,7 +253,7 @@ def test_possibility_overlay_is_available_to_an_atc(monkeypatch) -> None:
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
 
 
-def test_local_director_test_account_uses_its_configured_scope(monkeypatch) -> None:
+def test_local_rag_test_account_uses_its_configured_scope(monkeypatch) -> None:
     st.cache_data.clear()
     st.cache_resource.clear()
     monkeypatch.setenv("AUTH_MODE", "password")
@@ -266,16 +266,16 @@ def test_local_director_test_account_uses_its_configured_scope(monkeypatch) -> N
         json.dumps(
             [
                 {
-                    "username": "test-directeur",
+                    "username": "test-rag",
                     "password": "mot-de-passe-test-long",
-                    "display_name": "Test Directeur",
-                    "role": "director",
-                    "director_email": "c.vernay@litt.fr",
+                    "display_name": "Test RAG",
+                    "role": "rag",
+                    "rag_email": "c.vernay@litt.fr",
                 }
             ]
         ),
     )
-    storage_path = Path(".cache") / f"local-director-test-{uuid4().hex}.sqlite3"
+    storage_path = Path(".cache") / f"local-rag-test-{uuid4().hex}.sqlite3"
     store = AppStore(storage_path)
     store.save_clients(
         _portfolio_for_local_test_accounts(),
@@ -287,13 +287,13 @@ def test_local_director_test_account_uses_its_configured_scope(monkeypatch) -> N
 
     try:
         app = AppTest.from_file(str(app_path), default_timeout=30).run()
-        app.text_input[0].input("test-directeur")
+        app.text_input[0].input("test-rag")
         app.text_input[1].input("mot-de-passe-test-long")
         app.button[0].click().run()
 
         assert not app.exception
         assert any(
-            "Connecté : Test Directeur · Directeur" in caption.value
+            "Connecté : Test RAG · RAG" in caption.value
             for caption in app.caption
         )
         assert any(

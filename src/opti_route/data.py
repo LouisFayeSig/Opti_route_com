@@ -28,7 +28,7 @@ ADDRESS_COMPONENTS = (
 ENCODING_CHECK_COLUMNS = (
     "client_name",
     "salesperson",
-    "director_name",
+    "rag_name",
     "address",
     "address_2",
     "address_3",
@@ -109,7 +109,8 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "email_nom_e",
         "email_nom",
     ),
-    "director_name": (
+    "rag_name": (
+        "rag_name",
         "director_name",
         "nom_directeur",
         "directeur",
@@ -118,12 +119,19 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "n_1",
         "n1",
     ),
-    "director_email": (
+    "rag_email": (
+        "rag_email",
         "director_email",
         "email_directeur",
         "email_manager",
         "email_n_1_h",
         "email_n_1",
+    ),
+    "ug": (
+        "ug",
+        "code_ug",
+        "unite_gestion",
+        "unite_de_gestion",
     ),
     "agency": (
         "agency",
@@ -274,7 +282,7 @@ def _fill_sales_hierarchy(clients: pd.DataFrame) -> None:
     historiques ; le nom du commercial fait donc partie de la cle de regroupement.
     """
 
-    hierarchy_columns = ["salesperson_email", "director_name", "director_email"]
+    hierarchy_columns = ["salesperson_email", "rag_name", "rag_email"]
     for column in hierarchy_columns:
         clients[column] = clients[column].replace("", pd.NA)
 
@@ -380,8 +388,9 @@ def standardize_clients(
         "salesperson_code",
         "salesperson",
         "salesperson_email",
-        "director_name",
-        "director_email",
+        "rag_name",
+        "rag_email",
+        "ug",
         "agency",
         "agency_address",
         "address",
@@ -405,6 +414,13 @@ def standardize_clients(
         r"^(\d+-\d+)-\d+$", expand=False
     )
     clients.loc[missing_agency & derived_agency.notna(), "agency"] = derived_agency
+
+    missing_ug = clients["ug"].isna() | clients["ug"].eq("")
+    derived_ug = clients["agency"].str.extract(r"^(\d+)-\d+$", expand=False)
+    derived_ug = derived_ug.fillna(
+        clients["salesperson_code"].str.extract(r"^(\d+)-\d+-\d+$", expand=False)
+    )
+    clients.loc[missing_ug & derived_ug.notna(), "ug"] = derived_ug
 
     generated_ids = pd.Series(
         [f"ADRESSE-{position + 1}" for position in range(len(clients))],

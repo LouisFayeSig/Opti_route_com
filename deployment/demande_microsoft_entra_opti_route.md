@@ -5,9 +5,9 @@
 Bonjour,
 
 Merci de preparer l'acces Microsoft Entra ID pour l'application interne **Opti Route Com**.
-L'objectif est qu'un commercial ne consulte que son propre portefeuille clients, tandis qu'un directeur
-accede uniquement aux portefeuilles des commerciaux qui lui sont rattaches. Les administrateurs designes
-ont un acces global.
+L'objectif est qu'un ATC ne consulte que son propre portefeuille clients, qu'un RAG accede aux
+portefeuilles rattaches a son e-mail N+1 et qu'un DR accede aux agences de ses UG autorisees.
+Les administrateurs designes ont un acces global.
 
 Le fichier joint `utilisateurs_microsoft_entra_opti_route.csv` contient la liste des comptes a attribuer,
 ainsi qu'une colonne a completer avec leur **Object ID Entra**.
@@ -24,13 +24,14 @@ ainsi qu'une colonne a completer avec leur **Object ID Entra**.
 
 | Valeur technique | Libelle | Perimetre applicatif |
 |---|---|---|
-| `OptiRoute.ATC` | Opti Route - ATC | Portefeuille du seul commercial connecte |
-| `OptiRoute.Director` | Opti Route - Directeur | Portefeuilles de ses commerciaux rattaches, plus son propre portefeuille eventuel |
-| `OptiRoute.Admin` | Opti Route - Administrateur | Acces global, import et administration |
+| `D-FR-APP-OPTIROUTE-ATC` | D-FR-APP-OPTIROUTE-ATC | Portefeuille du seul commercial connecte |
+| `D-FR-APP-OPTIROUTE-RAG` | D-FR-APP-OPTIROUTE-RAG | Portefeuilles de ses commerciaux rattaches a son e-mail N+1, plus son propre portefeuille eventuel |
+| `D-FR-APP-OPTIROUTE-DR` | D-FR-APP-OPTIROUTE-DR | Toutes les agences des UG configurees dans l'application |
+| `D-FR-APP-OPTIROUTE-ADMIN` | D-FR-APP-OPTIROUTE-ADMIN | Acces global, import et administration |
 
-5. Dans **Enterprise applications -> Opti Route Com -> Users and groups**, attribuer exactement **un**
-   de ces roles a chaque compte de la liste. Activer *Assignment required* afin de bloquer tout compte
-   non explicitement attribue.
+5. Verifier que les quatre groupes Intra ci-dessus sont synchronises dans Entra, puis dans
+   **Enterprise applications -> Opti Route Com -> Users and groups**, attribuer chaque groupe a son
+   App Role homonyme. Activer *Assignment required* afin de bloquer tout compte non explicitement attribue.
 6. Ne pas ajouter de permissions Microsoft Graph : l'application ne consulte pas l'annuaire a l'execution.
 
 ## Informations a remettre a l'equipe Opti Route
@@ -43,18 +44,18 @@ ainsi qu'une colonne a completer avec leur **Object ID Entra**.
 
 ## Mise en correspondance dans l'application
 
-Apres la configuration Entra, un administrateur Opti Route associera chaque Object ID retourne au
-commercial ou directeur correspondant dans **Administration -> Habilitations**. L'Object ID reste la cle
-d'autorisation stable ; les e-mails du portefeuille servent uniquement a calculer le perimetre metier.
+Apres la configuration Entra, un administrateur Opti Route associera chaque Object ID retourne a
+l'ATC, au RAG ou au DR correspondant dans **Administration -> Habilitations**. L'Object ID reste la cle
+d'autorisation stable ; les e-mails et les UG du portefeuille servent uniquement a calculer le perimetre metier.
 
-Une personne presente a la fois comme commercial et comme directeur recoit uniquement le role
-`OptiRoute.Director` : l'application lui laisse aussi voir son propre portefeuille si elle en possede un.
+Une personne presente a la fois comme commercial et comme RAG recoit uniquement le role
+`D-FR-APP-OPTIROUTE-RAG` : l'application lui laisse aussi voir son propre portefeuille si elle en possede un.
 L'attribution de plusieurs roles a un meme compte est volontairement refusee.
 
 ## Synthese de la liste jointe
 
 - **3** administrateurs ;
-- **34** directeurs ;
+- **34** RAG ;
 - **70** ATC identifies par e-mail ;
 - **7** entrees ATC incompletes, a identifier plus tard.
 

@@ -16,6 +16,8 @@ CONFIG_VARIABLES = (
     "ADMIN_EMAILS",
     "ENTRA_TENANT_ID",
     "ENTRA_ROLE_ATC",
+    "ENTRA_ROLE_RAG",
+    "ENTRA_ROLE_DR",
     "ENTRA_ROLE_DIRECTOR",
     "ENTRA_ROLE_ADMIN",
     "APP_STORAGE_BACKEND",
@@ -51,7 +53,8 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
                 "ADMIN_EMAILS": "Admin@Example.com, autre@example.com",
                 "ENTRA_TENANT_ID": "tenant-id",
                 "ENTRA_ROLE_ATC": "Route.ATC",
-                "ENTRA_ROLE_DIRECTOR": "Route.Direction",
+                "ENTRA_ROLE_RAG": "Route.RAG",
+                "ENTRA_ROLE_DR": "Route.DR",
                 "ENTRA_ROLE_ADMIN": "Route.Admin",
                 "APP_STORAGE_BACKEND": "azure_blob",
                 "AZURE_STORAGE_ACCOUNT_URL": "https://storage.blob.core.windows.net",
@@ -74,7 +77,8 @@ def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
     assert settings.admin_emails == ("admin@example.com", "autre@example.com")
     assert settings.entra_tenant_id == "tenant-id"
     assert settings.entra_atc_role == "Route.ATC"
-    assert settings.entra_director_role == "Route.Direction"
+    assert settings.entra_rag_role == "Route.RAG"
+    assert settings.entra_dr_role == "Route.DR"
     assert settings.entra_admin_role == "Route.Admin"
     assert settings.app_storage_backend == "azure_blob"
     assert settings.azure_storage_account_url == "https://storage.blob.core.windows.net"
@@ -125,8 +129,9 @@ def test_entra_application_roles_must_be_distinct(monkeypatch) -> None:
             secrets={
                 "app": {
                     "ENTRA_ROLE_ATC": "OptiRoute.Same",
-                    "ENTRA_ROLE_DIRECTOR": "OptiRoute.Same",
-                    "ENTRA_ROLE_ADMIN": "OptiRoute.Admin",
+                    "ENTRA_ROLE_RAG": "OptiRoute.Same",
+                    "ENTRA_ROLE_DR": "OptiRoute.DR",
+                    "ENTRA_ROLE_ADMIN": "D-FR-APP-OPTIROUTE-ADMIN",
                 }
             },
         )

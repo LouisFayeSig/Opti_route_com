@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from .auth import ROLE_ATC, ROLE_DIRECTOR, AuthenticatedUser
+from .auth import ROLE_ATC, ROLE_DR, ROLE_RAG, AuthenticatedUser
 from .storage import UserAccessProfile
 
 
@@ -22,11 +22,12 @@ class AuthorizedPortfolio:
         if self.profile is None:
             return "admin:all"
         agencies = ",".join(sorted(self.profile.agencies, key=str.casefold))
+        ugs = ",".join(sorted(self.profile.ugs, key=str.casefold))
         return (
             f"{self.profile.principal_id}:{self.profile.role}:"
             f"{self.profile.atc_code or ''}:{self.profile.atc_email or ''}:"
-            f"{self.profile.atc_name or ''}:"
-            f"{self.profile.director_email or ''}:{agencies}:{self.profile.updated_at}"
+            f"{self.profile.atc_name or ''}:{self.profile.rag_email or ''}:"
+            f"{agencies}:{ugs}:{self.profile.updated_at}"
         )
 
 
@@ -42,7 +43,7 @@ def authorize_portfolio(
     """Applique le perimetre d'acces avant toute utilisation des donnees client.
 
     Le role vient du jeton Entra signe. Le profil stocke ne peut que restreindre ce
-    role a un code ATC ou a des agences ; il ne peut jamais elever les privileges.
+    role a un code ATC, au perimetre RAG ou a des UG ; il ne peut jamais elever les privileges.
     """
 
     if user.is_admin:
@@ -85,22 +86,27 @@ def authorize_portfolio(
                     )
         else:
             raise AccessDeniedError("Le perimetre ATC ne peut pas etre applique.")
-    elif user.role == ROLE_DIRECTOR:
-        if profile.director_email:
-            if "director_email" not in clients.columns:
-                raise AccessDeniedError("Le perimetre directeur par e-mail ne peut pas etre applique.")
-            mask = _normalized_text(clients["director_email"]).eq(
-                profile.director_email.casefold()
+    elif user.role == ROLE_RAG:
+        if profile.rag_email:
+            if "rag_email" not in clients.columns:
+                raise AccessDeniedError("Le perimetre RAG par e-mail ne peut pas etre applique.")
+            mask = _normalized_text(clients["rag_email"]).eq(
+                profile.rag_email.casefold()
             )
             if "salesperson_email" in clients.columns:
                 mask |= _normalized_text(clients["salesperson_email"]).eq(
-                    profile.director_email.casefold()
+                    profile.rag_email.casefold()
                 )
         elif "agency" in clients.columns and profile.agencies:
             allowed_agencies = {value.strip().casefold() for value in profile.agencies}
             mask = _normalized_text(clients["agency"]).isin(allowed_agencies)
         else:
-            raise AccessDeniedError("Le perimetre agence ne peut pas etre applique.")
+            raise AccessDeniedError("Le perimetre RAG ne peut pas etre applique.")
+    elif user.role == ROLE_DR:
+        if "ug" not in clients.columns or not profile.ugs:
+            raise AccessDeniedError("Le perimetre DR par UG ne peut pas etre applique.")
+        allowed_ugs = {value.strip().casefold() for value in profile.ugs}
+        mask = _normalized_text(clients["ug"]).isin(allowed_ugs)
     else:
         raise AccessDeniedError("Ce role applicatif n'est pas autorise.")
 

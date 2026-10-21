@@ -21,12 +21,13 @@ les conserve séparément et permet d'utiliser le versioning et le soft-delete n
 3. Dans le manifeste, remplacer la propriété `appRoles` par le contenu de
    `deployment/entra-app-roles.json`.
 4. Dans l'Enterprise Application, activer **Assignment required**.
-5. Attribuer exactement un rôle par utilisateur ou groupe :
-   `OptiRoute.ATC`, `OptiRoute.Director` ou `OptiRoute.Admin`.
+5. Attribuer exactement un rôle par groupe Intra synchronisé dans Entra :
+   `D-FR-APP-OPTIROUTE-ATC`, `D-FR-APP-OPTIROUTE-RAG`,
+   `D-FR-APP-OPTIROUTE-DR` ou `D-FR-APP-OPTIROUTE-ADMIN`.
 6. Ne donner aucune permission Microsoft Graph à l'application : elle n'en a pas besoin.
 7. Créer un secret client, le placer dans Key Vault et prévoir sa rotation.
 
-Le premier administrateur doit recevoir `OptiRoute.Admin` dans Entra. Ce rôle ne nécessite aucune
+Le premier administrateur doit recevoir `D-FR-APP-OPTIROUTE-ADMIN` dans Entra. Ce rôle ne nécessite aucune
 ligne d'habilitation dans l'application et permet donc d'initialiser les autres comptes.
 
 ## 3. Configuration OIDC Streamlit
@@ -38,9 +39,10 @@ comme fichier `/app/.streamlit/secrets.toml`. Le contenu attendu est :
 [app]
 AUTH_MODE = "entra"
 ENTRA_TENANT_ID = "<tenant-id>"
-ENTRA_ROLE_ATC = "OptiRoute.ATC"
-ENTRA_ROLE_DIRECTOR = "OptiRoute.Director"
-ENTRA_ROLE_ADMIN = "OptiRoute.Admin"
+ENTRA_ROLE_ATC = "D-FR-APP-OPTIROUTE-ATC"
+ENTRA_ROLE_RAG = "D-FR-APP-OPTIROUTE-RAG"
+ENTRA_ROLE_DR = "D-FR-APP-OPTIROUTE-DR"
+ENTRA_ROLE_ADMIN = "D-FR-APP-OPTIROUTE-ADMIN"
 
 [auth]
 redirect_uri = "https://<fqdn-container-app>/oauth2callback"
@@ -88,11 +90,12 @@ Vault. L'URL Storage, le tenant ID, les noms des rôles et le nom du conteneur n
 
 ## 6. Initialisation des habilitations
 
-1. L'administrateur se connecte avec son rôle Entra `OptiRoute.Admin`.
-2. Il importe le portefeuille contenant `Code ATC`, `Commercial` et `Agence`.
+1. L'administrateur se connecte avec son rôle Entra `D-FR-APP-OPTIROUTE-ADMIN`.
+2. Il importe le portefeuille contenant `Code ATC`, `Commercial`, `Agence` et `Code UG`.
 3. Dans **Administration → Habilitations**, il associe :
    - l'Object ID Entra d'un ATC à un code ATC ;
-   - l'Object ID Entra d'un directeur à une ou plusieurs agences.
+   - l'Object ID Entra d'un RAG à son e-mail N+1 ;
+   - l'Object ID Entra d'un DR à une ou plusieurs UG.
 4. L'utilisateur se reconnecte. Le rôle du jeton et le rôle attendu doivent être identiques.
 
 Retirer une habilitation bloque son périmètre au prochain rerun Streamlit. Retirer un App Role dans

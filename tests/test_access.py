@@ -15,7 +15,8 @@ def _portfolio() -> pd.DataFrame:
             "client_name": ["Alpha", "Beta", "Gamma"],
             "salesperson_code": ["ATC-01", "ATC-02", "ATC-03"],
             "salesperson": ["Alice", "Bob", "Chloe"],
-            "agency": ["Caen", "Caen", "Rouen"],
+            "agency": ["Caen", "Bayeux", "Rouen"],
+            "ug": ["10", "10", "20"],
         }
     )
 
@@ -29,11 +30,9 @@ def test_atc_only_receives_clients_linked_to_its_code() -> None:
     assert authorized.clients["client_name"].tolist() == ["Alpha"]
 
 
-def test_director_receives_all_atcs_from_authorized_agencies() -> None:
-    user = AuthenticatedUser("Direction", "entra", "director", "oid-direction")
-    profile = UserAccessProfile(
-        "oid-direction", "Direction", "director", agencies=("CAEN",)
-    )
+def test_dr_receives_all_agencies_from_authorized_ugs() -> None:
+    user = AuthenticatedUser("DR", "entra", "dr", "oid-dr")
+    profile = UserAccessProfile("oid-dr", "DR", "dr", ugs=("10",))
 
     authorized = authorize_portfolio(_portfolio(), user, profile)
 
@@ -44,18 +43,18 @@ def test_email_scopes_prevent_leaks_when_an_atc_code_is_reused() -> None:
     clients = pd.DataFrame(
         {
             "client_id": ["1", "2", "3", "4"],
-            "client_name": ["Alice client", "Bob client", "Other client", "Director own client"],
+            "client_name": ["Alice client", "Bob client", "Other client", "RAG own client"],
             "salesperson_code": ["01", "01", "02", "03"],
             "salesperson_email": [
                 "alice@example.test",
                 "bob@example.test",
                 "other@example.test",
-                "director@example.test",
+                "rag@example.test",
             ],
-            "director_email": [
-                "director@example.test",
-                "director@example.test",
-                "other-director@example.test",
+            "rag_email": [
+                "rag@example.test",
+                "rag@example.test",
+                "other-rag@example.test",
                 pd.NA,
             ],
             "agency": ["14", "76", "76", "14"],
@@ -69,22 +68,22 @@ def test_email_scopes_prevent_leaks_when_an_atc_code_is_reused() -> None:
         atc_code="01",
         atc_email="alice@example.test",
     )
-    director_user = AuthenticatedUser("Director", "entra", "director", "oid-director")
-    director_profile = UserAccessProfile(
-        "oid-director",
-        "Director",
-        "director",
-        director_email="director@example.test",
+    rag_user = AuthenticatedUser("RAG", "entra", "rag", "oid-rag")
+    rag_profile = UserAccessProfile(
+        "oid-rag",
+        "RAG",
+        "rag",
+        rag_email="rag@example.test",
     )
 
     atc_portfolio = authorize_portfolio(clients, atc_user, atc_profile)
-    director_portfolio = authorize_portfolio(clients, director_user, director_profile)
+    rag_portfolio = authorize_portfolio(clients, rag_user, rag_profile)
 
     assert atc_portfolio.clients["client_name"].tolist() == ["Alice client"]
-    assert director_portfolio.clients["client_name"].tolist() == [
+    assert rag_portfolio.clients["client_name"].tolist() == [
         "Alice client",
         "Bob client",
-        "Director own client",
+        "RAG own client",
     ]
 
 
@@ -129,7 +128,7 @@ def test_ambiguous_legacy_atc_code_is_denied_without_a_name_or_email() -> None:
 def test_profile_cannot_elevate_or_change_the_entra_role() -> None:
     user = AuthenticatedUser("Alice", "entra", "atc", "oid-alice")
     profile = UserAccessProfile(
-        "oid-alice", "Alice", "director", agencies=("Caen",)
+        "oid-alice", "Alice", "rag", rag_email="rag@example.test"
     )
 
     with pytest.raises(AccessDeniedError, match="ne correspondent pas"):

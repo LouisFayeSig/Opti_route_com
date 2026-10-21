@@ -19,9 +19,10 @@ _MAX_ATTEMPTS = 5
 _LOCK_SECONDS = 30
 
 ROLE_ATC = "atc"
-ROLE_DIRECTOR = "director"
+ROLE_RAG = "rag"
+ROLE_DR = "dr"
 ROLE_ADMIN = "admin"
-VALID_ROLES = (ROLE_ATC, ROLE_DIRECTOR, ROLE_ADMIN)
+VALID_ROLES = (ROLE_ATC, ROLE_RAG, ROLE_DR, ROLE_ADMIN)
 
 
 class AuthenticationError(RuntimeError):
@@ -42,8 +43,12 @@ class AuthenticatedUser:
         return self.role == ROLE_ADMIN
 
     @property
-    def is_director(self) -> bool:
-        return self.role == ROLE_DIRECTOR
+    def is_rag(self) -> bool:
+        return self.role == ROLE_RAG
+
+    @property
+    def is_dr(self) -> bool:
+        return self.role == ROLE_DR
 
     @property
     def is_atc(self) -> bool:
@@ -74,7 +79,8 @@ def authenticated_user_from_entra_claims(
     role_claims = {value.strip().casefold() for value in _claim_values(claims.get("roles"))}
     configured_roles = (
         (ROLE_ADMIN, settings.entra_admin_role),
-        (ROLE_DIRECTOR, settings.entra_director_role),
+        (ROLE_DR, settings.entra_dr_role),
+        (ROLE_RAG, settings.entra_rag_role),
         (ROLE_ATC, settings.entra_atc_role),
     )
     matched_roles = [
@@ -319,7 +325,8 @@ def render_account_controls(user: AuthenticatedUser) -> None:
 
     role_labels = {
         ROLE_ADMIN: "Administrateur",
-        ROLE_DIRECTOR: "Directeur",
+        ROLE_DR: "DR",
+        ROLE_RAG: "RAG",
         ROLE_ATC: "ATC",
     }
     role_label = role_labels.get(user.role, "Accès refusé")
