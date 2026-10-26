@@ -12,7 +12,9 @@ RUN poetry install --only main --no-root --no-ansi
 
 FROM python:3.12-slim AS runtime
 
-ENV PATH="/opt/venv/bin:${PATH}" \
+# Poetry generates console-script shebangs pointing to /build/.venv/bin/python.
+# Keep that absolute path in the runtime image instead of relocating the venv.
+ENV PATH="/build/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
@@ -20,7 +22,7 @@ ENV PATH="/opt/venv/bin:${PATH}" \
 RUN groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app
 WORKDIR /app
 
-COPY --from=builder /build/.venv /opt/venv
+COPY --from=builder /build/.venv /build/.venv
 COPY app.py ./
 COPY src ./src
 RUN mkdir -p /app/.cache /app/.streamlit && chown -R app:app /app
