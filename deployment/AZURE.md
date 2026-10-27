@@ -32,8 +32,10 @@ ligne d'habilitation dans l'application et permet donc d'initialiser les autres 
 
 ## 3. Configuration OIDC Streamlit
 
-Monter un secret Container Apps nommé par exemple `streamlit-secrets`, référencé depuis Key Vault,
-comme fichier `/app/.streamlit/secrets.toml`. Le contenu attendu est :
+Référencer dans Container Apps un secret nommé `streamlit-secrets`, fourni depuis Key Vault. Le
+monter dans le volume secret au chemin `/mnt/opti-route-secrets` ; il y apparaît sous le nom de
+fichier `streamlit-secrets`. L'image le copie au démarrage vers le fichier exigé par Streamlit,
+`/app/.streamlit/secrets.toml`. Le contenu attendu est :
 
 ```toml
 [app]
