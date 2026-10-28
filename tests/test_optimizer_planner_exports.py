@@ -198,6 +198,46 @@ def test_planner_keeps_planned_appointments_outside_the_radius() -> None:
     assert "PLANNED" in rebuilt.table["Code client"].tolist()
 
 
+def test_planner_completes_a_forced_distant_route_with_low_detour_companies() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_id": ["NEAR", "PLANNED", "ON_ROUTE_1", "ON_ROUTE_2", "OFF_ROUTE"],
+            "client_name": [
+                "Entreprise proche",
+                "Rendez-vous imposé",
+                "Sur le trajet 1",
+                "Sur le trajet 2",
+                "Détour important",
+            ],
+            "city": ["A"] * 5,
+            "full_address": ["A"] * 5,
+            "latitude": [0.0, 0.0, 0.0, 0.0, 0.5],
+            "longitude": [0.05, 1.0, 0.4, 0.7, 0.5],
+        }
+    )
+
+    plan = build_route_plan(
+        clients,
+        StartPoint(0.0, 0.0, "Départ"),
+        radius_km=20,
+        max_visits=4,
+        max_duration_hours=None,
+        return_to_start=False,
+        objective="time",
+        required_client_ids=["PLANNED"],
+    )
+
+    assert set(plan.table["Code client"]) == {
+        "NEAR",
+        "PLANNED",
+        "ON_ROUTE_1",
+        "ON_ROUTE_2",
+    }
+    assert "OFF_ROUTE" not in plan.table["Code client"].tolist()
+    assert plan.route_extension_count == 2
+    assert any("le moindre détour" in warning for warning in plan.warnings)
+
+
 def test_planner_rejects_more_planned_appointments_than_allowed() -> None:
     clients = pd.DataFrame(
         {

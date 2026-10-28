@@ -16,9 +16,9 @@ de provisionnement des périmètres est dans [deployment/EXPORT_ENTRA.md](deploy
 - stockage du portefeuille normalisé dans SQLite en local ou Azure Blob en production, sans conservation du classeur brut ;
 - choix obligatoire du commercial ;
 - parcours de préparation en trois étapes : portefeuille, entreprise de départ et rendez-vous ajoutés, puis revue ;
-- choix utilisateur du nombre total de visites, entre le nombre de rendez-vous ajoutés et le maximum administrateur ;
+- choix utilisateur du nombre total de visites hors départ, entre le nombre de rendez-vous ajoutés et le maximum administrateur ;
 - sélection ou désélection individuelle des adresses avant le calcul ;
-- ajout d'un ou plusieurs rendez-vous déjà planifiés : ils sont inclus même hors rayon et conservés lors d'un recalcul ;
+- ajout d'un ou plusieurs rendez-vous déjà planifiés : ils sont inclus même hors rayon, complétés au moindre détour le long de leur trajet et conservés lors d'un recalcul ;
 - retrait des seules visites facultatives depuis le résultat avec recalcul complet de la tournée ;
 - départ depuis une entreprise existante, affiché à l'ordre 0 ;
 - fin de tournée à la dernière visite, sans trajet de retour ;
@@ -27,12 +27,25 @@ de provisionnement des périmètres est dans [deployment/EXPORT_ENTRA.md](deploy
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
-- calque facultatif pour chaque utilisateur : entreprises non retenues en jaune dans le périmètre de la tournée et en vert au-delà, sans géocodage additionnel ;
+- calque facultatif pour chaque utilisateur : entreprises non retenues en jaune dans le rayon administrateur de départ et en vert hors rayon, sans géocodage additionnel ;
 - export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
 - authentification Microsoft Entra ID ou identifiant/mot de passe générique ;
 - mode d'estimation local lorsque la clé Azure Maps n'est pas configurée.
+
+### Règle de complétion d'une tournée avec rendez-vous forcé
+
+Le nombre demandé correspond aux visites affichées après le point bleu **Départ** : ce départ n'est
+pas compté. Les rendez-vous planifiés sont toujours retenus, même hors du rayon administrateur.
+L'application prend d'abord les entreprises sélectionnées dans ce rayon. Si un rendez-vous forcé est
+hors rayon et que le total demandé n'est pas atteint, elle complète avec les entreprises hors rayon
+qui ajoutent le moins de détour à la colonne vertébrale `départ → rendez-vous planifiés`.
+
+Cette présélection est faite à partir de la distance géographique pour rester performante sur un
+grand portefeuille ; l'itinéraire final est ensuite optimisé avec la matrice routière Azure Maps ou
+son estimation locale. Un avertissement explicite est affiché si le portefeuille sélectionné ne
+contient pas assez d'entreprises pour atteindre le total demandé.
 
 ## Installation
 

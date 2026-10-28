@@ -75,7 +75,7 @@ def possibility_points_from_candidates(
     candidates: pd.DataFrame,
     start_client_id: str | None,
 ) -> tuple[list[dict[str, object]], int, int, float]:
-    """Classe les entreprises hors tournée selon leur distance directe au départ."""
+    """Classe les entreprises hors tournée selon le rayon configuré depuis le départ."""
     if candidates.empty:
         return [], 0, 0, 0.0
 
@@ -92,20 +92,8 @@ def possibility_points_from_candidates(
     if points.empty:
         return [], 0, 0, 0.0
 
-    route_latitudes = plan.table["Latitude"].astype(float).to_numpy()
-    route_longitudes = plan.table["Longitude"].astype(float).to_numpy()
     start_latitude = np.radians(plan.start.latitude)
     start_longitude = np.radians(plan.start.longitude)
-    route_distances = 2 * 6371.0088 * np.arcsin(
-        np.sqrt(
-            np.sin((np.radians(route_latitudes) - start_latitude) / 2) ** 2
-            + np.cos(start_latitude)
-            * np.cos(np.radians(route_latitudes))
-            * np.sin((np.radians(route_longitudes) - start_longitude) / 2) ** 2
-        )
-    )
-    furthest_selected_km = float(route_distances.max())
-
     latitudes = points["latitude"].astype(float).to_numpy()
     longitudes = points["longitude"].astype(float).to_numpy()
     distances = 2 * 6371.0088 * np.arcsin(
@@ -116,7 +104,7 @@ def possibility_points_from_candidates(
             * np.sin((np.radians(longitudes) - start_longitude) / 2) ** 2
         )
     )
-    within_selected_range = distances <= furthest_selected_km + 1e-9
+    within_selected_range = distances <= plan.radius_km + 1e-9
     overlay: list[dict[str, object]] = []
     details = points[["client_name", "latitude", "longitude"]].itertuples(index=False)
     for detail, distance, is_nearby in zip(
@@ -137,7 +125,7 @@ def possibility_points_from_candidates(
             }
         )
     nearby_count = int(within_selected_range.sum())
-    return overlay, nearby_count, len(overlay) - nearby_count, furthest_selected_km
+    return overlay, nearby_count, len(overlay) - nearby_count, plan.radius_km
 
 
 def _possibility_layer(points: list[dict[str, object]]) -> pdk.Layer:

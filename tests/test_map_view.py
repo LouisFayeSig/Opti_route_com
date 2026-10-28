@@ -61,7 +61,7 @@ def test_admin_possibility_overlay_classifies_companies_from_the_start() -> None
                 {
                     "client_id": ["START", "POSSIBLE", "FAR"],
                     "client_name": ["Départ", "Possibilité", "Plus loin"],
-                    "latitude": [49.000, 49.020, 49.080],
+                    "latitude": [49.000, 49.020, 49.250],
                     "longitude": [-0.370, -0.370, -0.370],
                 }
             ),
@@ -70,11 +70,11 @@ def test_admin_possibility_overlay_classifies_companies_from_the_start() -> None
         ignore_index=True,
     )
 
-    points, nearby_count, distant_count, furthest_selected_km = possibility_points_from_candidates(
+    points, nearby_count, distant_count, configured_radius_km = possibility_points_from_candidates(
         plan, all_companies, "START"
     )
 
-    assert furthest_selected_km > 3
+    assert configured_radius_km == 20
     assert nearby_count == distant_count == 1
     assert {point["label"] for point in points} == {"Possibilité", "Plus loin"}
     assert {point["color"] for point in points} == {"#FBBF24", "#22C55E"}

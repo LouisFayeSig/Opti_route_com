@@ -177,7 +177,7 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         requested_visits = next(
             slider
             for slider in app.select_slider
-            if slider.label == "Nombre total de visites"
+            if slider.label == "Nombre total de visites (hors départ)"
         )
         assert requested_visits.value == 6
         radio_labels = [radio.label for radio in app.radio]

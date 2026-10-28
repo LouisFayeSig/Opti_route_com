@@ -7,7 +7,7 @@ from datetime import datetime
 import pandas as pd
 
 from .azure_maps import AzureMapsClient, AzureMapsError
-from .geo import clients_within_radius, estimated_road_matrix
+from .geo import clients_within_radius, estimated_road_matrix, haversine_km
 from .optimizer import optimize_route
 
 
@@ -35,7 +35,9 @@ class RoutePlan:
     return_to_start: bool
     provider: str
     candidates_in_radius: int
+    radius_km: float
     required_client_ids: frozenset[str] = field(default_factory=frozenset)
+    route_extension_count: int = 0
     omitted_for_duration: int = 0
     warnings: list[str] = field(default_factory=list)
     map_image: bytes | None = None
@@ -147,6 +149,107 @@ class RoutePlan:
         return pd.DataFrame(rows)
 
 
+def _required_route_coordinates(
+    required_rows: pd.DataFrame, start: StartPoint
+) -> list[tuple[float, float]]:
+    """Retourne l'ordre de base départ -> rendez-vous imposés.
+
+    Ce calcul est volontairement léger : il sert seulement à présélectionner les
+    entreprises qui prolongent naturellement une tournée imposée. L'optimisation
+    finale reste effectuée sur la matrice routière complète dans ``build_route_plan``.
+    """
+
+    coordinates = [(start.latitude, start.longitude)] + list(
+        zip(
+            required_rows["latitude"].astype(float),
+            required_rows["longitude"].astype(float),
+            strict=True,
+        )
+    )
+    if len(coordinates) <= 1:
+        return coordinates
+
+    durations, distances = estimated_road_matrix(coordinates)
+    ordered_nodes = optimize_route(
+        durations,
+        distances,
+        objective="time",
+        return_to_start=False,
+        prefer_nearest_first=True,
+    )
+    return [coordinates[node] for node in ordered_nodes]
+
+
+def _minimum_insertion_detour_km(
+    route_coordinates: list[tuple[float, float]], candidate: tuple[float, float]
+) -> tuple[float, int]:
+    """Calcule le détour direct minimal pour insérer un candidat dans une tournée ouverte."""
+
+    best_detour = float("inf")
+    best_insertion_index = len(route_coordinates)
+    for insertion_index in range(1, len(route_coordinates)):
+        origin = route_coordinates[insertion_index - 1]
+        destination = route_coordinates[insertion_index]
+        detour = (
+            haversine_km(*origin, *candidate)
+            + haversine_km(*candidate, *destination)
+            - haversine_km(*origin, *destination)
+        )
+        if detour < best_detour:
+            best_detour = detour
+            best_insertion_index = insertion_index
+
+    last_stop = route_coordinates[-1]
+    tail_detour = haversine_km(*last_stop, *candidate)
+    if tail_detour < best_detour:
+        return tail_detour, len(route_coordinates)
+    return best_detour, best_insertion_index
+
+
+def _select_low_detour_candidates(
+    candidates: pd.DataFrame,
+    required_rows: pd.DataFrame,
+    start: StartPoint,
+    count: int,
+) -> pd.DataFrame:
+    """Ajoute les candidats dont l'insertion détourne le moins la tournée imposée.
+
+    Les distances directes servent à limiter une présélection potentiellement très
+    large. Une fois les candidats retenus, la matrice Azure Maps (ou son repli local)
+    et OR-Tools calculent le véritable itinéraire routier.
+    """
+
+    if count <= 0 or candidates.empty:
+        return candidates.iloc[0:0].copy()
+
+    remaining = candidates.dropna(subset=["latitude", "longitude"]).drop_duplicates(
+        subset=["client_id"], keep="first"
+    ).reset_index(drop=True)
+    selected_rows: list[pd.Series] = []
+    route_coordinates = _required_route_coordinates(required_rows, start)
+
+    while len(selected_rows) < count and not remaining.empty:
+        ranked: list[tuple[float, str, int, int]] = []
+        for position, row in remaining.iterrows():
+            candidate_coordinates = (float(row["latitude"]), float(row["longitude"]))
+            detour, insertion_index = _minimum_insertion_detour_km(
+                route_coordinates, candidate_coordinates
+            )
+            ranked.append((detour, str(row["client_id"]), position, insertion_index))
+
+        _, _, position, insertion_index = min(ranked)
+        chosen = remaining.iloc[position]
+        selected_rows.append(chosen)
+        route_coordinates.insert(
+            insertion_index, (float(chosen["latitude"]), float(chosen["longitude"]))
+        )
+        remaining = remaining.drop(index=position).reset_index(drop=True)
+
+    if not selected_rows:
+        return candidates.iloc[0:0].copy()
+    return pd.DataFrame(selected_rows).reset_index(drop=True)
+
+
 def build_route_plan(
     clients: pd.DataFrame,
     start: StartPoint,
@@ -196,17 +299,46 @@ def build_route_plan(
     optional_candidates = candidates[
         ~candidates["client_id"].astype(str).isin(required_ids)
     ]
-    selected = pd.concat(
-        [required_rows, optional_candidates.head(max_visits - len(required_rows))],
-        ignore_index=True,
-    ).drop_duplicates(subset=["client_id"], keep="first")
-    warnings: list[str] = []
     required_outside_radius = len(required_rows) - int(
         required_rows["client_id"].astype(str).isin(candidates["client_id"].astype(str)).sum()
     )
+    in_radius_selection = optional_candidates.head(max_visits - len(required_rows))
+    remaining_slots = max_visits - len(required_rows) - len(in_radius_selection)
+    route_extension = eligible_clients.iloc[0:0].copy()
+    if remaining_slots > 0 and required_outside_radius:
+        selected_ids = set(
+            pd.concat([required_rows, in_radius_selection], ignore_index=True)["client_id"]
+            .astype(str)
+            .tolist()
+        )
+        outside_radius_candidates = eligible_clients[
+            ~eligible_clients["client_id"].astype(str).isin(selected_ids)
+            & ~eligible_clients["client_id"].astype(str).isin(candidates["client_id"].astype(str))
+        ]
+        route_extension = _select_low_detour_candidates(
+            outside_radius_candidates,
+            required_rows,
+            start,
+            remaining_slots,
+        )
+    selected = pd.concat(
+        [required_rows, in_radius_selection, route_extension],
+        ignore_index=True,
+    ).drop_duplicates(subset=["client_id"], keep="first")
+    warnings: list[str] = []
     if required_outside_radius:
         warnings.append(
             f"{required_outside_radius} rendez-vous planifié(s) hors du rayon ont été inclus."
+        )
+    if not route_extension.empty:
+        warnings.append(
+            f"{len(route_extension)} entreprise(s) hors du rayon ont été ajoutée(s) avec le moindre "
+            "détour le long des rendez-vous planifiés."
+        )
+    if len(selected) < max_visits:
+        warnings.append(
+            f"Tournée incomplète : {len(selected)} visite(s) trouvée(s) sur {max_visits} demandées "
+            "dans les entreprises sélectionnées."
         )
 
     node_coordinates = [(start.latitude, start.longitude)] + list(
@@ -313,7 +445,9 @@ def build_route_plan(
         return_to_start=return_to_start,
         provider=provider,
         candidates_in_radius=candidate_count,
+        radius_km=radius_km,
         required_client_ids=required_ids,
+        route_extension_count=len(route_extension),
         omitted_for_duration=len(selected) - len(visited_nodes),
         warnings=warnings,
         map_image=map_image,

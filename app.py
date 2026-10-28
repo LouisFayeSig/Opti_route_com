@@ -999,9 +999,14 @@ def _render_plan_summary(
     metric_columns[0].metric("Distance totale", f"{plan.total_distance_m / 1000:.1f} km")
     metric_columns[1].metric("Temps de conduite", _format_duration(plan.total_duration_s))
     metric_columns[2].metric("Entreprises à visiter", plan.visit_count)
-    st.caption(
+    calculation_caption = (
         f"Calcul : {plan.provider} · {plan.candidates_in_radius} entreprises dans le rayon"
     )
+    if plan.route_extension_count:
+        calculation_caption += (
+            f" · {plan.route_extension_count} ajoutée(s) hors rayon avec le moindre détour"
+        )
+    st.caption(calculation_caption)
     render_map(
         plan,
         settings.azure_maps_key,
@@ -1451,12 +1456,13 @@ with controls_column:
                 minimum_visits, min(6, route_configuration.max_visits)
             )
             requested_visits = st.select_slider(
-                "Nombre total de visites",
+                "Nombre total de visites (hors départ)",
                 options=list(range(minimum_visits, route_configuration.max_visits + 1)),
                 value=default_requested_visits,
                 help=(
                     "6 visites sont proposées par défaut. Les rendez-vous ajoutés sont compris dans ce "
-                    "total ; les entreprises les plus proches du départ sont retenues en priorité."
+                    "total ; le départ n'est pas compté. En présence d'un rendez-vous forcé hors rayon, "
+                    "la tournée est complétée avec les entreprises demandant le moins de détour."
                 ),
             )
 
@@ -1614,9 +1620,9 @@ with map_column:
             "Afficher le calque des possibilités",
             key=f"possibility_layer_{plan.created_at.isoformat()}",
             help=(
-                "Jaune : entreprises situées dans le rayon du point sélectionné le plus "
-                "éloigné du départ. Vert : entreprises plus éloignées. Le calque n'envoie "
-                "aucune nouvelle adresse à Azure Maps."
+                "Jaune : entreprises dans le rayon configuré depuis le départ. Vert : entreprises "
+                "hors rayon. Les entreprises ajoutées le long d'un rendez-vous forcé figurent déjà "
+                "en rouge dans la tournée. Le calque n'envoie aucune nouvelle adresse à Azure Maps."
             ),
         )
         if show_possibility_layer:
@@ -1634,12 +1640,12 @@ with map_column:
                 possibility_points,
                 nearby_count,
                 distant_count,
-                furthest_selected_km,
+                configured_radius_km,
             ) = possibility_points_from_candidates(
                 plan, overlay_candidates, overlay_start_client_id
             )
             st.caption(
-                f"Référence : {furthest_selected_km:.1f} km à vol d'oiseau depuis le départ · "
+                f"Rayon configuré : {configured_radius_km:.1f} km à vol d'oiseau depuis le départ · "
                 f"{nearby_count} possibilité(s) en jaune · {distant_count} en vert"
             )
             if missing_overlay_coordinates.any():
