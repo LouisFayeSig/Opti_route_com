@@ -27,9 +27,17 @@ _ROLE_VALUES = {
     "d_fr_app_optiroute_dr": "dr",
 }
 _ENTRA_ROLE_COLUMNS = ("app_role", "role_entra", "entra_role", "role", "groupe_entra")
-_OBJECT_ID_COLUMNS = ("object_id", "objectid", "id_objet", "id_d_objet", "entra_object_id")
+_OBJECT_ID_COLUMNS = (
+    "object_id",
+    "objectid",
+    "id_objet",
+    "id_d_objet",
+    "entra_object_id",
+    "id",
+)
 _DISPLAY_NAME_COLUMNS = (
     "display_name",
+    "displayname",
     "nom_affiche",
     "nom_d_affichage",
     "nom",
@@ -38,7 +46,9 @@ _DISPLAY_NAME_COLUMNS = (
 _EMAIL_COLUMNS = (
     "email",
     "e_mail",
+    "mail",
     "user_principal_name",
+    "userprincipalname",
     "nom_d_utilisateur_principal",
     "upn",
     "upn_ou_e_mail",
@@ -195,8 +205,10 @@ def parse_entra_members_csv(
         )
     id_column = _column_name(frame, _OBJECT_ID_COLUMNS, "de l'Object ID Entra")
     display_name_column = _optional_column_name(frame, _DISPLAY_NAME_COLUMNS)
-    email_column = _optional_column_name(frame, ("email", "e_mail"))
-    upn_column = _optional_column_name(frame, ("user_principal_name", "upn"))
+    email_column = _optional_column_name(frame, ("email", "e_mail", "mail"))
+    upn_column = _optional_column_name(
+        frame, ("user_principal_name", "userprincipalname", "nom_d_utilisateur_principal", "upn")
+    )
     if email_column is None and upn_column is None:
         raise ProvisioningError("Colonne e-mail ou UPN introuvable dans l'export Entra.")
 

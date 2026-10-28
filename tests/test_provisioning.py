@@ -94,6 +94,18 @@ def test_native_entra_group_export_uses_the_selected_group_role() -> None:
     )
 
 
+def test_native_entra_portal_technical_headers_are_supported() -> None:
+    members = parse_entra_members_csv(
+        b"displayName,objectType,mail,userType,id,deviceId,userPrincipalName,isUser,isGroup,isGuest\n"
+        b"ATC,User,atc@example.test,Member,oid-atc,,atc@example.test,true,false,false\n",
+        default_role="atc",
+    )
+
+    assert members[0].principal_id == "oid-atc"
+    assert members[0].display_name == "ATC"
+    assert members[0].email == "atc@example.test"
+
+
 def test_native_group_exports_reject_a_member_with_two_roles() -> None:
     atc = parse_entra_members_csv(
         b"Object ID,User principal name,Display name,Member type\n"
