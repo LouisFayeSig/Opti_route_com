@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 import streamlit as st
 
 from .config import Settings
+
+_LOGGER = logging.getLogger(__name__)
 
 _AUTHENTICATED_KEY = "opti_route_authenticated"
 _AUTHENTICATED_NAME_KEY = "opti_route_authenticated_name"
@@ -89,6 +92,15 @@ def authenticated_user_from_entra_claims(
         if claim_value.strip().casefold() in role_claims
     ]
     if not matched_roles:
+        # This contains no token or credential. It lets an operator distinguish a
+        # missing Entra role claim from a role-value or client-registration mismatch.
+        _LOGGER.warning(
+            "Entra app-role claim not recognized: audience=%s tenant=%s roles=%s claim_keys=%s",
+            claims.get("aud"),
+            tenant_id,
+            sorted(role_claims),
+            sorted(str(key) for key in claims if key != "tokens"),
+        )
         raise AuthenticationError(
             "Aucun role Opti Route reconnu n'est attribue a ce compte dans Microsoft Entra ID."
         )
