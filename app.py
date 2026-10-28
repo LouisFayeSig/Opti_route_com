@@ -49,6 +49,14 @@ from opti_route.planner import (
     build_route_plan,
     rebuild_route_plan,
 )
+from opti_route.provisioning import (
+    ProvisioningError,
+    ProvisioningPlan,
+    build_provisioning_plan,
+    parse_dr_regions,
+    parse_entra_members_csv,
+    users_sheet_name,
+)
 from opti_route.storage import (
     ApplicationStore,
     PortfolioMetadata,
@@ -255,6 +263,90 @@ def _address_correction_panel(
             st.rerun()
 
 
+def _automatic_provisioning_panel(
+    store: ApplicationStore,
+    clients: pd.DataFrame,
+    *,
+    workbook_bytes: bytes,
+    workbook_name: str,
+    sheet_names: list[str],
+    file_hash: str,
+) -> ProvisioningPlan | None:
+    """Prévisualise un provisionnement sans écrire avant la validation d'import."""
+
+    with st.expander("Provisionner les habilitations depuis l'export Entra", expanded=False):
+        st.caption(
+            "Optionnel. Importez le CSV produit par export_entra_group_members.ps1. "
+            "Les rôles restent contrôlés par Entra ; seules les habilitations métier "
+            "ATC, RAG et DR seront créées ou mises à jour."
+        )
+        users_sheet = users_sheet_name(sheet_names)
+        if users_sheet is None:
+            st.info(
+                "Aucune feuille Utilisateurs détectée dans ce classeur : le provisionnement "
+                "automatique des DR n'est pas disponible."
+            )
+            return None
+        exported_members = st.file_uploader(
+            "Export des membres des groupes Entra (CSV)",
+            type=["csv"],
+            help=(
+                "Fichier généré avec scripts/export_entra_group_members.ps1. "
+                "Il contient les Object IDs Entra nécessaires à l'application."
+            ),
+            key=f"entra_members_export_{file_hash}",
+        )
+        if exported_members is None:
+            return None
+        try:
+            users = read_tabular(
+                io.BytesIO(workbook_bytes),
+                filename=workbook_name,
+                sheet_name=users_sheet,
+                header_row=0,
+            )
+            members = parse_entra_members_csv(exported_members.getvalue())
+            plan = build_provisioning_plan(clients, members, parse_dr_regions(users))
+            existing_ids = {
+                profile.principal_id for profile in store.list_access_profiles()
+            }
+        except (ProvisioningError, StorageError, ValueError) as exc:
+            st.error(str(exc))
+            return None
+
+        st.caption(
+            f"Feuille Utilisateurs : {users_sheet} · "
+            f"{len(plan.candidates)} habilitation(s) prête(s) · "
+            f"{plan.admin_count} administrateur(s) sans habilitation métier."
+        )
+        preview = plan.preview_rows(existing_ids)
+        if preview:
+            st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
+        else:
+            st.warning("Aucune habilitation ne peut être créée à partir de ces fichiers.")
+        if plan.issues:
+            issues = pd.DataFrame(
+                [
+                    {
+                        "Niveau": issue.severity,
+                        "Object ID Entra": issue.principal_id,
+                        "Détail": issue.message,
+                    }
+                    for issue in plan.issues
+                ]
+            )
+            st.warning(
+                "Certaines lignes ne seront pas provisionnées automatiquement. "
+                "Corrigez-les ou utilisez ensuite l'onglet Habilitations."
+            )
+            st.dataframe(issues, hide_index=True, use_container_width=True)
+        st.caption(
+            "L'application n'écrit jamais dans Entra ID et ne supprime aucune habilitation "
+            "existante automatiquement."
+        )
+        return plan
+
+
 def _admin_import_panel(
     store: ApplicationStore,
     user: AuthenticatedUser,
@@ -365,6 +457,15 @@ def _admin_import_panel(
         st.error(str(exc))
         return
 
+    provisioning_plan = _automatic_provisioning_panel(
+        store,
+        clients,
+        workbook_bytes=file_bytes,
+        workbook_name=uploaded.name,
+        sheet_names=sheets,
+        file_hash=file_hash,
+    )
+
     encoding_issues = find_suspicious_encoding(clients)
     if not encoding_issues.empty:
         st.warning(
@@ -416,12 +517,17 @@ def _admin_import_panel(
         f"Cloisonnement : {atc_with_email}/{len(atc_scopes)} commerciaux avec e-mail "
         f"et {atc_with_rag}/{len(atc_scopes)} rattachés à un RAG."
     )
+    save_label = (
+        "Enregistrer et géocoder le portefeuille"
+        if missing_coordinates
+        else "Enregistrer ce portefeuille"
+    )
+    if provisioning_plan is not None and provisioning_plan.candidates:
+        save_label += (
+            f" et appliquer {len(provisioning_plan.candidates)} habilitation(s)"
+        )
     if st.button(
-        (
-            "Enregistrer et géocoder le portefeuille"
-            if missing_coordinates
-            else "Enregistrer ce portefeuille"
-        ),
+        save_label,
         type="primary",
         use_container_width=True,
         disabled=bool(missing_coordinates and geocoding_client is None),
@@ -430,6 +536,7 @@ def _admin_import_panel(
         try:
             enriched_clients = clients
             geocode_errors: list[str] = []
+            provisioned_count = 0
             if missing_coordinates:
                 progress_bar = st.progress(
                     0,
@@ -459,6 +566,10 @@ def _admin_import_panel(
                 source_name=uploaded.name,
                 imported_by=user.display_name,
             )
+            if provisioning_plan is not None:
+                for candidate in provisioning_plan.candidates:
+                    store.save_access_profile(candidate.profile, updated_by=user.display_name)
+                provisioned_count = len(provisioning_plan.candidates)
         except StorageError as exc:
             st.error(str(exc))
         else:
@@ -470,6 +581,7 @@ def _admin_import_panel(
                 "geocoded": int(
                     enriched_clients[["latitude", "longitude"]].notna().all(axis=1).sum()
                 ),
+                "provisioned": provisioned_count,
             }
             if missing_coordinates and suffix in {".xlsx", ".xlsm"}:
                 st.session_state[f"{result_key}_workbook"] = geocoded_workbook_bytes(
@@ -490,6 +602,10 @@ def _admin_import_panel(
             "Le portefeuille sécurisé a été remplacé "
             f"({import_result['geocoded']}/{len(clients)} entreprises géocodées)."
         )
+        if import_result.get("provisioned", 0):
+            st.success(
+                f"{import_result['provisioned']} habilitation(s) ont été créées ou mises à jour."
+            )
         if geocode_errors:
             st.warning(
                 f"{len(geocode_errors)} adresse(s) n'ont pas pu être géocodées et restent "

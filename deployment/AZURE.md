@@ -100,6 +100,13 @@ Vault. L'URL Storage, le tenant ID, les noms des rôles et le nom du conteneur n
    - l'Object ID Entra d'un DR à une ou plusieurs UG.
 4. L'utilisateur se reconnecte. Le rôle du jeton et le rôle attendu doivent être identiques.
 
+Pour un premier chargement ou une mise à jour en masse, l'administrateur peut téléverser le CSV
+produit par `scripts/export_entra_group_members.ps1` dans le panneau d'import du portefeuille.
+Avec la feuille **Utilisateurs** de `Liste_client_def.xlsx`, l'application prépare une
+prévisualisation des habilitations ATC, RAG et DR avant leur écriture. Les DR utilisent la colonne
+`Code Region` (par exemple `20-24-31-34`). Les comptes non rapprochés et les UG absentes restent
+en anomalie ; aucune habilitation existante n'est supprimée automatiquement.
+
 Retirer une habilitation bloque son périmètre au prochain rerun Streamlit. Retirer un App Role dans
 Entra prend pleinement effet à l'expiration du jeton courant ou après déconnexion ; les politiques
 Conditional Access du tenant peuvent réduire cette durée selon le niveau de risque souhaité.

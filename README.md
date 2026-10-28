@@ -255,6 +255,20 @@ voit les clients des commerciaux rattachés à son e-mail N+1 et un DR toutes le
 des UG qui lui sont attribuées. L'ancien filtrage par agence
 reste disponible pour les portefeuilles historiques qui ne contiennent pas ces e-mails.
 
+Pour éviter cette saisie compte par compte, l'administrateur peut téléverser, dans le panneau
+d'import du portefeuille, le CSV généré par `scripts/export_entra_group_members.ps1`. Si le
+classeur contient la feuille **Utilisateurs** de `Liste_client_def.xlsx`, Opti Route rapproche les
+Object IDs et e-mails Entra avec le portefeuille et affiche une prévisualisation avant écriture :
+
+- ATC : e-mail professionnel et portefeuille ATC ;
+- RAG : e-mail N+1 ;
+- DR : `Code Region` de la feuille **Utilisateurs**, par exemple `20-24-31-34` ;
+- ADMIN : aucun profil métier, car l'accès est global.
+
+Le bouton d'enregistrement crée ou met à jour uniquement les habilitations validées. Les comptes
+sans correspondance et les UG absentes sont signalés, et aucune habilitation existante n'est
+supprimée automatiquement. Cette opération n'écrit jamais dans Microsoft Entra ID.
+
 Pour `Liste_client_def.xlsx`, la reference utilisee par Opti Route est la colonne `code`
 complete : par exemple `10-03-82` pour Yvon RONDEL. `10` est l'UG, `03` l'agence et
 `82` le portefeuille ; le code agence conserve dans l'application est donc `10-03`.
