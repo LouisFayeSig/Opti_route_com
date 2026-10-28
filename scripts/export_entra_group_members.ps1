@@ -1,7 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$OutputPath = "exports/opti-route-entraid-users.csv"
+    [string]$OutputPath = "exports/opti-route-entraid-users.csv",
+
+    # Optional but recommended when the signed-in account can access more than
+    # one tenant. This is the Microsoft Entra Directory (tenant) ID, not the
+    # Azure subscription ID and not an application Client ID.
+    [Parameter()]
+    [string]$TenantId
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,8 +37,15 @@ foreach ($module in $requiredModules) {
 }
 
 # Read-only delegated permissions. An Entra administrator must grant consent
-# if the tenant blocks consent for GroupMember.Read.All.
-Connect-MgGraph -Scopes "GroupMember.Read.All", "User.ReadBasic.All" -NoWelcome
+# once for the operator (or approve the request) if the tenant blocks user
+# consent for GroupMember.Read.All. This command never creates, modifies or
+# assigns an Entra user, group, role or application.
+if ($TenantId) {
+    Connect-MgGraph -TenantId $TenantId -Scopes "GroupMember.Read.All", "User.ReadBasic.All" -NoWelcome
+}
+else {
+    Connect-MgGraph -Scopes "GroupMember.Read.All", "User.ReadBasic.All" -NoWelcome
+}
 
 $rows = @()
 

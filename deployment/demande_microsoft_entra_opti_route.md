@@ -1,4 +1,9 @@
-# Demande de configuration Microsoft Entra ID - Opti Route Com
+# Archive - demande initiale de configuration Microsoft Entra ID
+
+> Ce document est conservé comme trace de la demande initiale. L'architecture et les procédures
+> à appliquer désormais sont dans [AZURE.md](AZURE.md) et [EXPORT_ENTRA.md](EXPORT_ENTRA.md).
+> L'ancienne URL Streamlit Community Cloud n'est plus la cible de production : utiliser le FQDN
+> HTTPS de `app-optiroute` suivi de `/oauth2callback`.
 
 **Objet :** creation et parametrage de l'application Microsoft Entra ID pour Opti Route Com.
 
@@ -18,7 +23,7 @@ ainsi qu'une colonne a completer avec leur **Object ID Entra**.
    (*Accounts in this organizational directory only*).
 2. Configurer une plateforme **Web** et les URI de redirection :
    - pilote local : `http://localhost:8501/oauth2callback` ;
-   - production : `https://optiroutecom-gjub52oavwrfithbhbe4da.streamlit.app/oauth2callback`.
+   - production : `https://<fqdn-app-optiroute>/oauth2callback`.
 3. Creer un secret client.
 4. Definir les App Roles suivants :
 
@@ -32,7 +37,9 @@ ainsi qu'une colonne a completer avec leur **Object ID Entra**.
 5. Verifier que les quatre groupes Intra ci-dessus sont synchronises dans Entra, puis dans
    **Enterprise applications -> Opti Route Com -> Users and groups**, attribuer chaque groupe a son
    App Role homonyme. Activer *Assignment required* afin de bloquer tout compte non explicitement attribue.
-6. Ne pas ajouter de permissions Microsoft Graph : l'application ne consulte pas l'annuaire a l'execution.
+6. Ne pas ajouter de permissions Microsoft Graph à l'application Opti Route : elle ne consulte pas
+   l'annuaire à l'exécution. L'export administratif de membres décrit dans `EXPORT_ENTRA.md` est un
+   outil PowerShell séparé et demande ses propres autorisations déléguées en lecture.
 
 ## Informations a remettre a l'equipe Opti Route
 

@@ -2,8 +2,10 @@
 
 Application Streamlit interne pour préparer et optimiser des tournées commerciales à partir d'un portefeuille clients.
 
-Le guide de déploiement Entra ID, Managed Identity, Blob Storage et Container Apps est disponible
-dans [deployment/AZURE.md](deployment/AZURE.md).
+Le guide de déploiement, d'exploitation et d'architecture Azure (Container Apps, identités,
+Key Vault, Blob Storage, Entra et GitHub Actions) est disponible dans
+[deployment/AZURE.md](deployment/AZURE.md). La procédure récurrente d'export des membres Entra et
+de provisionnement des périmètres est dans [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
 
 ## Fonctionnalités du MVP
 
@@ -11,7 +13,7 @@ dans [deployment/AZURE.md](deployment/AZURE.md).
 - détection automatique des colonnes et correspondance manuelle si leurs noms varient ;
 - choix de la feuille et de la ligne d'en-tête ;
 - séparation des rôles administrateur et utilisateur ;
-- stockage du portefeuille normalisé dans SQLite sans conservation du classeur brut ;
+- stockage du portefeuille normalisé dans SQLite en local ou Azure Blob en production, sans conservation du classeur brut ;
 - choix obligatoire du commercial ;
 - parcours de préparation en trois étapes : portefeuille, entreprise de départ et rendez-vous ajoutés, puis revue ;
 - choix utilisateur du nombre total de visites, entre le nombre de rendez-vous ajoutés et le maximum administrateur ;
@@ -127,11 +129,13 @@ L'application refuse par défaut un jeton sans rôle reconnu, provenant d'un aut
 plusieurs rôles Opti Route. Chaque compte doit donc recevoir exactement un rôle.
 Les anciennes listes `ADMIN_EMAILS` ne donnent plus aucun droit en mode Entra.
 
-Après la première connexion de l'administrateur, utiliser l'onglet **Administration →
-Habilitations** pour associer l'Object ID Entra (`oid`) de chaque ATC à son code ATC, chaque
-RAG à son e-mail N+1 et chaque DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'habilitation
-doivent correspondre ; une incohérence bloque l'accès. L'adresse e-mail n'est pas utilisée comme clé
-d'autorisation, car elle peut changer.
+Après la première connexion de l'administrateur, provisionner de préférence les habilitations par
+l'import du CSV Entra décrit plus bas et dans [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
+L'onglet **Administration → Habilitations** reste utile pour corriger ponctuellement un compte : il
+associe l'Object ID Entra (`oid`) de chaque ATC à son code ATC, chaque RAG à son e-mail N+1 et chaque
+DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'habilitation doivent
+correspondre ; une incohérence bloque l'accès. L'adresse e-mail sert à calculer le périmètre, mais
+l'Object ID reste la clé d'autorisation stable.
 
 Le fichier `.streamlit/secrets.toml` est ignoré par Git. Seul le fichier d'exemple sans secret est
 versionné. En production, placer ces valeurs dans le gestionnaire de secrets de l'hébergeur.
@@ -181,6 +185,7 @@ Sur Azure Container Apps, activer le backend Blob persistant :
 APP_STORAGE_BACKEND=azure_blob
 AZURE_STORAGE_ACCOUNT_URL=https://nomducompte.blob.core.windows.net
 AZURE_STORAGE_CONTAINER=opti-route-private
+AZURE_CLIENT_ID=Client-ID-de-id-optiroute
 ```
 
 Attribuer à l'identité managée de la Container App le rôle **Storage Blob Data Contributor**, limité
@@ -188,7 +193,9 @@ au conteneur ou au compte utilisé. Ne pas fournir de clé de stockage ni de con
 production. Le conteneur privé doit être créé par l'infrastructure avant le démarrage. Le backend
 enregistre séparément le portefeuille normalisé, les paramètres et chaque habilitation. Activer sur
 le compte Storage le versioning, le soft-delete des blobs et des conteneurs, ainsi qu'une règle de
-cycle de vie. `AZURE_STORAGE_CONNECTION_STRING` est uniquement prévu pour Azurite ou un test local.
+cycle de vie. `AZURE_CLIENT_ID` sélectionne explicitement l'identité runtime attachée à la Container
+App ; ce n'est ni le Client ID OIDC des collaborateurs, ni celui de GitHub Actions.
+`AZURE_STORAGE_CONNECTION_STRING` est uniquement prévu pour Azurite ou un test local.
 
 Le calcul des routes reste effectué par Azure Maps. Le fond interactif Streamlit utilise PyDeck par défaut afin de ne pas exposer la clé au navigateur et de ne pas dépendre des règles CORS. Le contrôle Web Azure peut être réactivé après configuration de l'origine Streamlit dans Azure Maps :
 
@@ -268,6 +275,9 @@ Object IDs et e-mails Entra avec le portefeuille et affiche une prévisualisatio
 Le bouton d'enregistrement crée ou met à jour uniquement les habilitations validées. Les comptes
 sans correspondance et les UG absentes sont signalés, et aucune habilitation existante n'est
 supprimée automatiquement. Cette opération n'écrit jamais dans Microsoft Entra ID.
+
+La procédure Cloud Shell, les consentements Graph nécessaires, le format CSV et les contrôles de
+sécurité sont détaillés dans [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
 
 Pour `Liste_client_def.xlsx`, la reference utilisee par Opti Route est la colonne `code`
 complete : par exemple `10-03-82` pour Yvon RONDEL. `10` est l'UG, `03` l'agence et
