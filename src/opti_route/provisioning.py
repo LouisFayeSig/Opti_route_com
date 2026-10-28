@@ -27,12 +27,19 @@ _ROLE_VALUES = {
     "d_fr_app_optiroute_dr": "dr",
 }
 _ENTRA_ROLE_COLUMNS = ("app_role", "role_entra", "entra_role", "role", "groupe_entra")
-_OBJECT_ID_COLUMNS = ("object_id", "objectid", "id_objet", "entra_object_id")
-_DISPLAY_NAME_COLUMNS = ("display_name", "nom_affiche", "nom", "name")
+_OBJECT_ID_COLUMNS = ("object_id", "objectid", "id_objet", "id_d_objet", "entra_object_id")
+_DISPLAY_NAME_COLUMNS = (
+    "display_name",
+    "nom_affiche",
+    "nom_d_affichage",
+    "nom",
+    "name",
+)
 _EMAIL_COLUMNS = (
     "email",
     "e_mail",
     "user_principal_name",
+    "nom_d_utilisateur_principal",
     "upn",
     "upn_ou_e_mail",
     "upn_ou_email",
@@ -111,28 +118,66 @@ def _email(value: object) -> str:
 
 
 def _column_name(frame: pd.DataFrame, aliases: tuple[str, ...], label: str) -> str:
-    normalized = {normalize_column_name(column): str(column) for column in frame.columns}
-    for alias in aliases:
-        if alias in normalized:
-            return normalized[alias]
+    match = _optional_column_name(frame, aliases)
+    if match is not None:
+        return match
     available = ", ".join(map(str, frame.columns))
     raise ProvisioningError(f"Colonne {label} introuvable. Colonnes détectées : {available}")
 
 
 def _optional_column_name(frame: pd.DataFrame, aliases: tuple[str, ...]) -> str | None:
     normalized = {normalize_column_name(column): str(column) for column in frame.columns}
-    return next((normalized[alias] for alias in aliases if alias in normalized), None)
+    exact = next((normalized[alias] for alias in aliases if alias in normalized), None)
+    if exact is not None:
+        return exact
+    for alias in aliases:
+        decorated = next(
+            (
+                column
+                for normalized_name, column in normalized.items()
+                if normalized_name.startswith(f"{alias}_")
+                or normalized_name.endswith(f"_{alias}")
+            ),
+            None,
+        )
+        if decorated is not None:
+            return decorated
+    return None
 
 
 def _role(value: object) -> str | None:
     return _ROLE_VALUES.get(normalize_column_name(_text(value)))
 
 
-def parse_entra_members_csv(payload: bytes) -> tuple[EntraMember, ...]:
-    """Lit le CSV généré par export_entra_group_members.ps1.
+def _validate_unique_entra_roles(members: tuple[EntraMember, ...]) -> tuple[EntraMember, ...]:
+    duplicate_ids = {
+        member.principal_id
+        for member in members
+        if sum(other.principal_id == member.principal_id for other in members) > 1
+    }
+    if duplicate_ids:
+        raise ProvisioningError(
+            "Un ou plusieurs comptes appartiennent à plusieurs groupes Opti Route : "
+            + ", ".join(sorted(duplicate_ids))
+        )
+    return members
 
-    Le fichier peut être séparé par une virgule ou un point-virgule, mais doit
-    comporter l'Object ID et le rôle Entra pour chaque membre.
+
+def merge_entra_member_exports(*exports: tuple[EntraMember, ...]) -> tuple[EntraMember, ...]:
+    """Réunit les exports des groupes et rejette un rôle Entra multiple."""
+
+    return _validate_unique_entra_roles(tuple(member for export in exports for member in export))
+
+
+def parse_entra_members_csv(
+    payload: bytes, *, default_role: str | None = None
+) -> tuple[EntraMember, ...]:
+    """Lit un CSV consolidé ou le téléchargement natif des membres d'un groupe Entra.
+
+    Le fichier peut être séparé par une virgule ou un point-virgule. Un export
+    consolidé doit comporter l'Object ID et le rôle Entra. L'export natif du
+    portail Entra n'a pas de colonne de rôle : ``default_role`` est alors fourni
+    par l'écran qui associe explicitement le fichier à son groupe.
     """
 
     try:
@@ -142,7 +187,12 @@ def parse_entra_members_csv(payload: bytes) -> tuple[EntraMember, ...]:
     if frame.empty:
         raise ProvisioningError("L'export Entra ne contient aucun utilisateur.")
 
-    role_column = _column_name(frame, _ENTRA_ROLE_COLUMNS, "du rôle Entra")
+    role_column = _optional_column_name(frame, _ENTRA_ROLE_COLUMNS)
+    if role_column is None and _role(default_role) is None:
+        raise ProvisioningError(
+            "Colonne du rôle Entra introuvable. Importez le CSV consolidé ou associez "
+            "l'export natif au groupe Entra correspondant."
+        )
     id_column = _column_name(frame, _OBJECT_ID_COLUMNS, "de l'Object ID Entra")
     display_name_column = _optional_column_name(frame, _DISPLAY_NAME_COLUMNS)
     email_column = _optional_column_name(frame, ("email", "e_mail"))
@@ -154,7 +204,7 @@ def parse_entra_members_csv(payload: bytes) -> tuple[EntraMember, ...]:
     issues: list[str] = []
     for _, row in frame.iterrows():
         principal_id = _text(row[id_column]).casefold()
-        role = _role(row[role_column])
+        role = _role(row[role_column]) if role_column else _role(default_role)
         email = _email(row[email_column]) if email_column else ""
         email = email or (_email(row[upn_column]) if upn_column else "")
         display_name = _text(row[display_name_column]) if display_name_column else email
@@ -178,17 +228,7 @@ def parse_entra_members_csv(payload: bytes) -> tuple[EntraMember, ...]:
 
     if issues:
         raise ProvisioningError("Export Entra invalide : " + "; ".join(issues[:3]))
-    duplicate_ids = {
-        member.principal_id
-        for member in members
-        if sum(other.principal_id == member.principal_id for other in members) > 1
-    }
-    if duplicate_ids:
-        raise ProvisioningError(
-            "Un ou plusieurs comptes appartiennent à plusieurs groupes Opti Route : "
-            + ", ".join(sorted(duplicate_ids))
-        )
-    return tuple(members)
+    return _validate_unique_entra_roles(tuple(members))
 
 
 def _split_ugs(value: object) -> tuple[str, ...]:

@@ -11,10 +11,10 @@ pas confondre ce mécanisme avec l'authentification de l'application Opti Route.
 
 ```text
 Groupes Entra ID
-        │ lecture seule Microsoft Graph
+        │ téléchargement natif du portail, ou lecture Microsoft Graph
         ▼
-export_entra_group_members.ps1
-        │ CSV temporaire : Object ID, e-mail, rôle Entra
+4 CSV de groupes, ou export_entra_group_members.ps1
+        │ Object ID, e-mail / UPN, rôle Entra
         ▼
 Administration Opti Route > import du portefeuille
         │ rapprochement avec la feuille Utilisateurs et le portefeuille
@@ -37,18 +37,46 @@ périmètre métier interne (ATC, RAG ou DR).
   - `D-FR-APP-OPTIROUTE-RAG`
 - Ils sont affectés à l'application d'entreprise **Opti Route**, chacun avec l'App Role de
   même valeur.
-- L'opérateur peut ouvrir Azure Cloud Shell avec son compte professionnel. Il n'a pas besoin
-  d'être administrateur Azure sur le groupe de ressources.
 - Le classeur de portefeuille contient la feuille `Utilisateurs`, dont les colonnes de référence sont
   `Role Entra`, `UPN ou e-mail` et, pour les DR, `Code Region`.
+
+Deux modes d'export sont disponibles. L'export natif du portail est à privilégier lorsqu'aucun droit
+Microsoft Graph n'est accordé. Le script PowerShell reste disponible pour produire un fichier unique.
+
+## Voie recommandée sans droit Graph : exports natifs du portail Entra
+
+Depuis **Applications d'entreprise > Opti Route > Utilisateurs et groupes**, ouvrir successivement
+les quatre groupes affectés à l'application. Sur la page **Membres** de chaque groupe, utiliser
+**Opérations en bloc > Télécharger les membres**. Donner un nom au téléchargement, lancer
+l'opération puis récupérer le CSV terminé dans les notifications ou dans les résultats des opérations
+en bloc.
+
+Télécharger exactement un fichier pour chacun des groupes suivants :
+
+```text
+D-FR-APP-OPTIROUTE-ADMIN
+D-FR-APP-OPTIROUTE-ATC
+D-FR-APP-OPTIROUTE-DR
+D-FR-APP-OPTIROUTE-RAG
+```
+
+Ces CSV contiennent déjà `Object ID`, `User principal name`, `Display name` et `Member type`.
+Ne pas les modifier ni les fusionner. Dans Opti Route, sélectionner **Exports natifs du portail
+Entra (sans script)**, puis déposer chaque fichier dans le champ portant le même nom que son groupe.
+L'application déduit le rôle du champ choisi, vérifie qu'un Object ID n'est pas présent dans deux
+groupes, et produit la même prévisualisation que le script PowerShell.
+
+Le téléchargement de la liste des membres est accessible aux utilisateurs standards comme aux
+administrateurs, sous réserve que l'utilisateur puisse déjà voir le groupe. Il ne modifie jamais
+les membres ni l'affectation de rôle.
+
+## Alternative : Azure Cloud Shell PowerShell
 
 Le script demande les autorisations Microsoft Graph déléguées `GroupMember.Read.All` et
 `User.ReadBasic.All`. Si le tenant bloque le consentement utilisateur, l'équipe Entra doit
 accorder ce consentement à l'opérateur ou exécuter elle-même le script. Cette approbation porte
 sur la lecture annuaire par PowerShell ; elle est distincte du consentement OIDC de l'application
 Opti Route et ne se répète pas pour chaque collaborateur du portefeuille.
-
-## Exécution recommandée : Azure Cloud Shell PowerShell
 
 Cloud Shell évite d'installer Azure CLI, PowerShell ou les modules Graph sur le poste Windows.
 Les fichiers placés dans le dossier personnel Cloud Shell sont conservés dans son partage de
@@ -129,8 +157,10 @@ les habilitations ont été appliquées dans l'application.
    `D-FR-APP-OPTIROUTE-ADMIN`.
 2. Ouvrir **Administration > Portefeuille d'entreprises** et sélectionner le fichier
    `Liste_client_def.xlsx` (ou son fichier de mise à jour) contenant la feuille `Utilisateurs`.
-3. Dans le même panneau, ouvrir **Provisionner les habilitations depuis l'export Entra** et déposer
-   le CSV exporté.
+3. Dans le même panneau, ouvrir **Provisionner les habilitations depuis l'export Entra** puis choisir :
+   - **Exports natifs du portail Entra (sans script)** et déposer les quatre CSV dans les champs des
+     groupes correspondants ; ou
+   - **CSV consolidé produit par le script PowerShell** et déposer le fichier unique.
 4. Lire la prévisualisation avant l'enregistrement. Elle annonce une action `Create` ou `Update`,
    le rôle signé Entra, le collaborateur, son Object ID et le périmètre calculé.
 5. Cliquer sur **Enregistrer le portefeuille et appliquer N habilitation(s)**. L'écriture se fait

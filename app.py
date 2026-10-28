@@ -53,6 +53,7 @@ from opti_route.provisioning import (
     ProvisioningError,
     ProvisioningPlan,
     build_provisioning_plan,
+    merge_entra_member_exports,
     parse_dr_regions,
     parse_entra_members_csv,
     users_sheet_name,
@@ -276,9 +277,8 @@ def _automatic_provisioning_panel(
 
     with st.expander("Provisionner les habilitations depuis l'export Entra", expanded=False):
         st.caption(
-            "Optionnel. Importez le CSV produit par export_entra_group_members.ps1. "
-            "Les rôles restent contrôlés par Entra ; seules les habilitations métier "
-            "ATC, RAG et DR seront créées ou mises à jour."
+            "Optionnel. Les rôles restent contrôlés par Entra ; seules les habilitations métier "
+            "ATC, RAG et DR seront créées ou mises à jour dans Opti Route."
         )
         users_sheet = users_sheet_name(sheet_names)
         if users_sheet is None:
@@ -287,17 +287,57 @@ def _automatic_provisioning_panel(
                 "automatique des DR n'est pas disponible."
             )
             return None
-        exported_members = st.file_uploader(
-            "Export des membres des groupes Entra (CSV)",
-            type=["csv"],
-            help=(
-                "Fichier généré avec scripts/export_entra_group_members.ps1. "
-                "Il contient les Object IDs Entra nécessaires à l'application."
+        export_source = st.radio(
+            "Source des membres Entra",
+            options=(
+                "Exports natifs du portail Entra (sans script)",
+                "CSV consolidé produit par le script PowerShell",
             ),
-            key=f"entra_members_export_{file_hash}",
+            help=(
+                "Les exports natifs sont téléchargés, groupe par groupe, depuis Opérations en bloc "
+                "> Télécharger les membres."
+            ),
+            key=f"entra_members_source_{file_hash}",
         )
-        if exported_members is None:
-            return None
+        exported_members = None
+        group_exports: list[tuple[str, object]] = []
+        if export_source.startswith("Exports natifs"):
+            st.info(
+                "Téléchargez les membres des quatre groupes avec Opérations en bloc > "
+                "Télécharger les membres, puis associez chaque CSV au groupe affiché. "
+                "Aucun droit Microsoft Graph ni retraitement manuel n'est nécessaire."
+            )
+            role_groups = (
+                ("admin", "D-FR-APP-OPTIROUTE-ADMIN"),
+                ("atc", "D-FR-APP-OPTIROUTE-ATC"),
+                ("dr", "D-FR-APP-OPTIROUTE-DR"),
+                ("rag", "D-FR-APP-OPTIROUTE-RAG"),
+            )
+            for role, group_name in role_groups:
+                uploaded_group = st.file_uploader(
+                    f"Export de membres : {group_name}",
+                    type=["csv"],
+                    key=f"entra_group_export_{role}_{file_hash}",
+                )
+                if uploaded_group is not None:
+                    group_exports.append((role, uploaded_group))
+            if len(group_exports) != len(role_groups):
+                st.caption(
+                    f"{len(group_exports)}/{len(role_groups)} export(s) de groupe chargé(s)."
+                )
+                return None
+        else:
+            exported_members = st.file_uploader(
+                "Export des membres des groupes Entra (CSV)",
+                type=["csv"],
+                help=(
+                    "Fichier généré avec scripts/export_entra_group_members.ps1. "
+                    "Il contient les Object IDs Entra nécessaires à l'application."
+                ),
+                key=f"entra_members_export_{file_hash}",
+            )
+            if exported_members is None:
+                return None
         try:
             users = read_tabular(
                 io.BytesIO(workbook_bytes),
@@ -305,7 +345,15 @@ def _automatic_provisioning_panel(
                 sheet_name=users_sheet,
                 header_row=0,
             )
-            members = parse_entra_members_csv(exported_members.getvalue())
+            if exported_members is not None:
+                members = parse_entra_members_csv(exported_members.getvalue())
+            else:
+                members = merge_entra_member_exports(
+                    *tuple(
+                        parse_entra_members_csv(uploaded_group.getvalue(), default_role=role)
+                        for role, uploaded_group in group_exports
+                    )
+                )
             plan = build_provisioning_plan(clients, members, parse_dr_regions(users))
             existing_ids = {
                 profile.principal_id for profile in store.list_access_profiles()

@@ -256,8 +256,10 @@ avec `Key Vault Secrets User`, réservé à la lecture runtime. Éviter les attr
 4. L'utilisateur se reconnecte. Le rôle du jeton et le rôle attendu doivent être identiques.
 
 Pour un premier chargement ou une mise à jour en masse, l'administrateur peut téléverser le CSV
-produit par `scripts/export_entra_group_members.ps1` dans le panneau d'import du portefeuille.
-Avec la feuille **Utilisateurs** de `Liste_client_def.xlsx`, l'application prépare une
+produit par `scripts/export_entra_group_members.ps1`, ou les quatre exports natifs Entra obtenus
+groupe par groupe via **Opérations en bloc > Télécharger les membres**. Cette dernière option ne
+requiert aucun droit Microsoft Graph. Avec la feuille **Utilisateurs** de `Liste_client_def.xlsx`,
+l'application prépare une
 prévisualisation des habilitations ATC, RAG et DR avant leur écriture. Les DR utilisent la colonne
 `Code Region` (par exemple `20-24-31-34`). Les comptes non rapprochés et les UG absentes restent
 en anomalie ; aucune habilitation existante n'est supprimée automatiquement.
@@ -273,8 +275,8 @@ modification d'UG ou une mise à jour du portefeuille :
 
 1. L'équipe identité modifie l'appartenance du collaborateur dans **un seul** groupe Entra Opti Route
    et vérifie son affectation au bon App Role de l'application d'entreprise.
-2. Un administrateur Opti Route exécute l'[export Entra](EXPORT_ENTRA.md), puis importe le CSV et
-   le portefeuille mis à jour dans l'application.
+2. Un administrateur Opti Route exécute l'[export Entra](EXPORT_ENTRA.md) — téléchargement natif
+   sans Graph ou script PowerShell — puis importe les CSV et le portefeuille mis à jour dans l'application.
 3. Il lit les anomalies de rapprochement et valide les créations ou mises à jour proposées.
 4. Il teste le périmètre avec un compte représentatif du rôle concerné.
 5. Pour un départ ou un retrait immédiat, retirer d'abord l'affectation Entra (blocage de connexion

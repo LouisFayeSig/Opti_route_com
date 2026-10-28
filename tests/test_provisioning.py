@@ -4,8 +4,10 @@ import pandas as pd
 import pytest
 
 from opti_route.provisioning import (
+    EntraMember,
     ProvisioningError,
     build_provisioning_plan,
+    merge_entra_member_exports,
     parse_dr_regions,
     parse_entra_members_csv,
     users_sheet_name,
@@ -73,6 +75,39 @@ def test_duplicate_entra_roles_are_refused() -> None:
 
     with pytest.raises(ProvisioningError, match="plusieurs groupes"):
         parse_entra_members_csv(payload)
+
+
+def test_native_entra_group_export_uses_the_selected_group_role() -> None:
+    members = parse_entra_members_csv(
+        b"Object ID [objectId],User principal name [userPrincipalName],Display name [displayName],Member type\n"
+        b"oid-atc,atc@example.test,ATC,User\n",
+        default_role="D-FR-APP-OPTIROUTE-ATC",
+    )
+
+    assert members == (
+        EntraMember(
+            role="atc",
+            principal_id="oid-atc",
+            display_name="ATC",
+            email="atc@example.test",
+        ),
+    )
+
+
+def test_native_group_exports_reject_a_member_with_two_roles() -> None:
+    atc = parse_entra_members_csv(
+        b"Object ID,User principal name,Display name,Member type\n"
+        b"oid-same,same@example.test,Same,User\n",
+        default_role="atc",
+    )
+    rag = parse_entra_members_csv(
+        b"Object ID,User principal name,Display name,Member type\n"
+        b"oid-same,same@example.test,Same,User\n",
+        default_role="rag",
+    )
+
+    with pytest.raises(ProvisioningError, match="plusieurs groupes"):
+        merge_entra_member_exports(atc, rag)
 
 
 def test_users_sheet_is_detected() -> None:

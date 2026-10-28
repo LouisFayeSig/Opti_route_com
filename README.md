@@ -276,9 +276,11 @@ des UG qui lui sont attribuées. L'ancien filtrage par agence
 reste disponible pour les portefeuilles historiques qui ne contiennent pas ces e-mails.
 
 Pour éviter cette saisie compte par compte, l'administrateur peut téléverser, dans le panneau
-d'import du portefeuille, le CSV généré par `scripts/export_entra_group_members.ps1`. Si le
-classeur contient la feuille **Utilisateurs** de `Liste_client_def.xlsx`, Opti Route rapproche les
-Object IDs et e-mails Entra avec le portefeuille et affiche une prévisualisation avant écriture :
+d'import du portefeuille, soit le CSV généré par `scripts/export_entra_group_members.ps1`, soit les
+quatre exports natifs **Opérations en bloc → Télécharger les membres** du portail Entra. Cette
+seconde méthode ne demande aucun droit Microsoft Graph et associe chaque fichier au groupe affiché.
+Si le classeur contient la feuille **Utilisateurs** de `Liste_client_def.xlsx`, Opti Route rapproche
+les Object IDs et e-mails Entra avec le portefeuille et affiche une prévisualisation avant écriture :
 
 - ATC : e-mail professionnel et portefeuille ATC ;
 - RAG : e-mail N+1 ;
