@@ -47,6 +47,8 @@ grand portefeuille ; l'itinéraire final est ensuite optimisé avec la matrice r
 son estimation locale. Un avertissement explicite est affiché si le portefeuille sélectionné ne
 contient pas assez d'entreprises pour atteindre le total demandé.
 
+## Azure Deployment : https://github.com/LouisFayeSig/Opti_route_com/blob/main/deployment/AZURE.md
+
 ## Installation
 
 Une version Python 3.x comprise entre 3.11 inclus et 4.0 exclu est nécessaire.
