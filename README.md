@@ -27,7 +27,7 @@ de provisionnement des périmètres est dans [deployment/EXPORT_ENTRA.md](deploy
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
-- calque facultatif pour chaque utilisateur : entreprises non retenues en jaune dans le rayon administrateur de départ et en vert hors rayon, sans géocodage additionnel ;
+- portefeuille autorisé affiché sur la carte dès la connexion, avec un calque activé par défaut et masquable ; après calcul, entreprises non retenues en jaune dans le rayon administrateur de départ et en vert hors rayon, sans géocodage additionnel ;
 - export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
@@ -154,6 +154,16 @@ Le fichier `.streamlit/secrets.toml` est ignoré par Git. Seul le fichier d'exem
 versionné. En production, placer ces valeurs dans le gestionnaire de secrets de l'hébergeur.
 Streamlit active automatiquement ses protections CORS et XSRF lorsque cette configuration OIDC est
 présente.
+
+Une session Entra expirée relance la connexion Microsoft pour réutiliser le SSO disponible, sans
+déconnecter préalablement le compte Microsoft. L'accès reste bloqué jusqu'à réception d'un nouveau
+jeton valide. Le bouton **Se déconnecter** efface les données de la session, y compris les tournées,
+les sélections et les exports. Le mode `password` reste lié à la session Streamlit : un rechargement
+complet ou une nouvelle session peut demander les identifiants à nouveau.
+
+Sur mobile, une sélection de certificat demandée par `device.login.microsoftonline.com` correspond
+à l'identification de l'appareil par Entra. Le diagnostic et les contrôles à réaliser avec l'équipe
+Entra/Intune sont décrits dans [deployment/AUTH_MOBILE.md](deployment/AUTH_MOBILE.md).
 
 ### Déploiement sur Streamlit Community Cloud
 
@@ -300,8 +310,10 @@ complete : par exemple `10-03-82` pour Yvon RONDEL. `10` est l'UG, `03` l'agence
 Le seul `code ATC` (`82`) n'est pas utilise comme identifiant, car il peut etre present
 dans plusieurs agences.
 
-Le calque des possibilites est visible par tous, mais uniquement sur le portefeuille
-auquel la session a deja droit. Son activation ne geocode aucune nouvelle adresse : les
+Le calque portefeuille est activé par défaut à chaque nouvelle connexion et montre l'ensemble
+du périmètre autorisé, avant même de choisir un départ ou de calculer une tournée. Il peut être
+masqué pour le confort visuel ; ce choix reste conservé pendant la session, y compris après un
+calcul ou un recalcul. L'affichage ne géocode aucune nouvelle adresse : les
 entreprises sans coordonnees sont simplement absentes du calque. L'import produit aussi
 un bouton de telechargement d'une copie Excel enrichie des colonnes `Latitude` et `Longitude`.
 Cette copie doit remplacer le fichier source pour conserver les coordonnees dans le temps ;

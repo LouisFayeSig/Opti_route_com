@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import math
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -194,6 +195,24 @@ def _login_heading(description: str) -> None:
     st.info(description, icon="🔐")
 
 
+def _logout(method: str) -> None:
+    # Les sélections, exports et tournées ne doivent pas survivre à un changement de compte.
+    st.session_state.clear()
+    if method == "entra":
+        st.logout()
+
+
+def _login_with_microsoft() -> None:
+    try:
+        st.login("microsoft")
+    except Exception as exc:
+        _LOGGER.error("Microsoft sign-in failed (%s)", type(exc).__name__)
+        st.error(
+            "La connexion Microsoft n'a pas pu démarrer. Réessayez ; si le problème persiste, "
+            "contactez l'administrateur pour vérifier la configuration OIDC et l'accès à Microsoft."
+        )
+
+
 def _require_password_auth(settings: Settings) -> AuthenticatedUser:
     has_standard_user = bool(settings.auth_username and settings.auth_password)
     has_admin = bool(settings.admin_username and settings.admin_password)
@@ -221,7 +240,7 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
     _login_heading("Saisissez l’identifiant partagé configuré pour cette application.")
     now = time.monotonic()
     locked_until = float(st.session_state.get(_LOCKED_UNTIL_KEY, 0.0))
-    remaining = max(0, round(locked_until - now))
+    remaining = max(0, math.ceil(locked_until - now))
     if remaining:
         st.error(f"Trop de tentatives. Réessayez dans {remaining} secondes.")
 
@@ -239,7 +258,7 @@ def _require_password_auth(settings: Settings) -> AuthenticatedUser:
             disabled=remaining > 0,
         )
 
-    if submitted:
+    if submitted and not remaining:
         authenticated_user = password_user_from_credentials(settings, username, password)
         if authenticated_user is not None:
             st.session_state[_AUTHENTICATED_KEY] = True
@@ -276,14 +295,27 @@ def _require_entra_auth(settings: Settings) -> AuthenticatedUser:
         try:
             if expires_at is None:
                 raise ValueError
-            is_expired = time.time() >= float(str(expires_at))
+            expiration = float(str(expires_at))
+            if not math.isfinite(expiration):
+                raise ValueError
+            is_expired = time.time() >= expiration
         except (TypeError, ValueError):
             _login_heading("La session Microsoft reçue est invalide.")
             st.error("Le jeton Entra ne contient pas de date d'expiration valide.")
-            st.button("Se déconnecter", on_click=st.logout, use_container_width=True)
+            st.button(
+                "Se déconnecter", on_click=_logout, args=("entra",), use_container_width=True
+            )
             st.stop()
         if is_expired:
-            st.logout()
+            _login_heading("Renouvellement de votre session Microsoft…")
+            # Réutilise le SSO Microsoft plutôt que de déconnecter aussi le fournisseur.
+            # Aucun accès métier n'est accordé avant réception d'un nouveau jeton valide.
+            _login_with_microsoft()
+            st.button(
+                "Réessayer la connexion Microsoft",
+                on_click=_login_with_microsoft,
+                use_container_width=True,
+            )
             st.stop()
         try:
             return authenticated_user_from_entra_claims(user_data, settings)
@@ -294,18 +326,14 @@ def _require_entra_auth(settings: Settings) -> AuthenticatedUser:
             if principal_id:
                 st.code(principal_id, language=None)
                 st.caption("Identifiant Entra a transmettre a l'administrateur si necessaire.")
-            st.button("Se deconnecter", on_click=st.logout, use_container_width=True)
+            st.button(
+                "Se déconnecter", on_click=_logout, args=("entra",), use_container_width=True
+            )
             st.stop()
 
     _login_heading("Connectez-vous avec votre compte Microsoft professionnel.")
     if st.button("Se connecter avec Microsoft", type="primary", use_container_width=True):
-        try:
-            st.login("microsoft")
-        except Exception:
-            st.error(
-                "La configuration Entra ID est absente ou incomplète. "
-                "Vérifiez .streamlit/secrets.toml."
-            )
+        _login_with_microsoft()
     st.stop()
 
 
@@ -343,13 +371,6 @@ def render_account_controls(user: AuthenticatedUser) -> None:
     }
     role_label = role_labels.get(user.role, "Accès refusé")
     st.caption(f"Connecté : {user.display_name} · {role_label}")
-    if user.method == "entra":
-        st.button("Se déconnecter", on_click=st.logout, use_container_width=True)
-    elif st.button("Se déconnecter", use_container_width=True):
-        st.session_state.pop(_AUTHENTICATED_KEY, None)
-        st.session_state.pop(_AUTHENTICATED_NAME_KEY, None)
-        st.session_state.pop(_AUTHENTICATED_PRINCIPAL_NAME_KEY, None)
-        st.session_state.pop(_AUTHENTICATED_ROLE_KEY, None)
-        st.session_state.pop(_FAILED_ATTEMPTS_KEY, None)
-        st.session_state.pop(_LOCKED_UNTIL_KEY, None)
-        st.rerun()
+    st.button(
+        "Se déconnecter", on_click=_logout, args=(user.method,), use_container_width=True
+    )

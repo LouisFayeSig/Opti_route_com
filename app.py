@@ -41,7 +41,12 @@ from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
 from opti_route.ign_geocoding import IgnGeocodingClient
 from opti_route.importing import geocoded_workbook_bytes
-from opti_route.map_view import possibility_points_from_candidates, render_map
+from opti_route.map_view import (
+    portfolio_points_from_clients,
+    possibility_points_from_candidates,
+    render_map,
+    render_portfolio_map,
+)
 from opti_route.planner import (
     PlanningError,
     RoutePlan,
@@ -1642,7 +1647,7 @@ with controls_column:
             # Le calque est limite au portefeuille deja autorise pour la
             # session. Il est disponible a tous les roles, sans elargir le
             # perimetre de donnees.
-            st.session_state["route_overlay_candidates"] = assigned_clients.copy()
+            st.session_state["route_overlay_candidates"] = scoped_clients.copy()
             st.session_state["route_overlay_start_client_id"] = start_client_id
         except (PlanningError, ClientDataError, StorageError, ValueError) as exc:
             st.error(str(exc))
@@ -1651,31 +1656,46 @@ with controls_column:
 
 with map_column:
     plan: RoutePlan | None = st.session_state.get("route_plan")
+    show_possibility_layer = st.toggle(
+        "Afficher le calque portefeuille",
+        value=True,
+        key="portfolio_layer_visible",
+        help=(
+            "Affiche toutes les entreprises géocodées de votre périmètre autorisé. "
+            "Après calcul : jaune dans le rayon de départ, vert hors rayon, rouge dans la tournée. "
+            "Vous pouvez masquer ce calque pour alléger la carte."
+        ),
+    )
     if plan is None:
-        st.markdown(
-            """
-            <div class="opti-empty">
-              <div class="opti-empty-icon">🗺️</div>
-              <h3>Votre tournée apparaîtra ici</h3>
-              <div>Choisissez le commercial, les entreprises et le point de départ.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        portfolio_points = portfolio_points_from_clients(scoped_clients)
+        if show_possibility_layer and portfolio_points:
+            st.subheader("Votre portefeuille")
+            render_portfolio_map(portfolio_points)
+            st.caption(f"{len(portfolio_points)} entreprise(s) de votre portefeuille sur la carte.")
+        elif show_possibility_layer:
+            st.info("Aucune entreprise de votre portefeuille ne possède de coordonnées exploitables.")
+        else:
+            st.markdown(
+                """
+                <div class="opti-empty">
+                  <div class="opti-empty-icon">🗺️</div>
+                  <h3>Votre tournée apparaîtra ici</h3>
+                  <div>Choisissez le commercial, les entreprises et le point de départ.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        missing_count = len(scoped_clients) - len(portfolio_points)
+        if show_possibility_layer and missing_count:
+            st.caption(
+                f"{missing_count} entreprise(s) sans coordonnées exploitables ne sont pas affichées. "
+                "Aucun géocodage supplémentaire n'est effectué."
+            )
     else:
         possibility_points: list[dict[str, object]] | None = None
-        show_possibility_layer = st.toggle(
-            "Afficher le calque des possibilités",
-            key=f"possibility_layer_{plan.created_at.isoformat()}",
-            help=(
-                "Jaune : entreprises dans le rayon configuré depuis le départ. Vert : entreprises "
-                "hors rayon. Les entreprises ajoutées le long d'un rendez-vous forcé figurent déjà "
-                "en rouge dans la tournée. Le calque n'envoie aucune nouvelle adresse à Azure Maps."
-            ),
-        )
         if show_possibility_layer:
             overlay_candidates = st.session_state.get(
-                "route_overlay_candidates", assigned_clients
+                "route_overlay_candidates", scoped_clients
             )
             missing_overlay_coordinates = (
                 overlay_candidates["latitude"].isna()

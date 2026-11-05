@@ -145,6 +145,55 @@ def _possibility_layer(points: list[dict[str, object]]) -> pdk.Layer:
     )
 
 
+def portfolio_points_from_clients(clients: pd.DataFrame) -> list[dict[str, object]]:
+    """Prépare uniquement les coordonnées existantes du portefeuille autorisé."""
+    points = clients.copy()
+    for column in ("latitude", "longitude"):
+        points[column] = pd.to_numeric(points[column], errors="coerce")
+    points = points[
+        points["latitude"].between(-90, 90) & points["longitude"].between(-180, 180)
+    ]
+    return [
+        {
+            "latitude": float(row.latitude),
+            "longitude": float(row.longitude),
+            "label": str(row.client_name),
+            "order": "Portefeuille",
+            "rgb": [34, 197, 94],
+            "radius": 260,
+        }
+        for row in points[["client_name", "latitude", "longitude"]].itertuples(index=False)
+    ]
+
+
+def render_portfolio_map(points: list[dict[str, object]], height: int = 520) -> None:
+    if not points:
+        return
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=[_possibility_layer(points)],
+            initial_view_state=_points_view(points),
+            tooltip={"text": "{label}"},
+            map_style=pdk.map_styles.LIGHT,
+        ),
+        height=height,
+        use_container_width=True,
+    )
+
+
+def _points_view(points: list[dict[str, object]]) -> pdk.ViewState:
+    min_latitude = min(point["latitude"] for point in points)
+    max_latitude = max(point["latitude"] for point in points)
+    min_longitude = min(point["longitude"] for point in points)
+    max_longitude = max(point["longitude"] for point in points)
+    largest_span = max(max_latitude - min_latitude, max_longitude - min_longitude, 0.01)
+    return pdk.ViewState(
+        latitude=(min_latitude + max_latitude) / 2,
+        longitude=(min_longitude + max_longitude) / 2,
+        zoom=max(1.0, min(14.0, math.log2(360 / largest_span) - 1.6)),
+    )
+
+
 def _direction_arrows(geometry: list[tuple[float, float]]) -> list[dict[str, object]]:
     if len(geometry) < 2:
         return []
@@ -252,20 +301,7 @@ def render_pydeck_map(
             get_text_anchor=String("middle"),
         ),
     ]
-    all_points = [*points, *possibilities]
-    latitude_span = max(point["latitude"] for point in all_points) - min(
-        point["latitude"] for point in all_points
-    )
-    longitude_span = max(point["longitude"] for point in all_points) - min(
-        point["longitude"] for point in all_points
-    )
-    largest_span = max(float(latitude_span), float(longitude_span), 0.01)
-    zoom = max(3.5, min(14.0, math.log2(360 / largest_span) - 1.6))
-    view = pdk.ViewState(
-        latitude=sum(point["latitude"] for point in all_points) / len(all_points),
-        longitude=sum(point["longitude"] for point in all_points) / len(all_points),
-        zoom=zoom,
-    )
+    view = _points_view([*points, *possibilities])
     st.pydeck_chart(
         pdk.Deck(
             layers=layers,

@@ -7,9 +7,40 @@ import pandas as pd
 from opti_route.map_view import (
     _map_points,
     _persistent_label_layer,
+    _points_view,
+    portfolio_points_from_clients,
     possibility_points_from_candidates,
 )
 from opti_route.planner import StartPoint, build_route_plan
+
+
+def test_portfolio_points_use_only_valid_existing_coordinates() -> None:
+    clients = pd.DataFrame(
+        {
+            "client_name": ["Valide", "Absent", "Texte", "Infini", "Hors limites"],
+            "latitude": ["49.18", None, "invalide", float("inf"), 95],
+            "longitude": ["-0.37", -0.37, -0.37, -0.37, -0.37],
+        }
+    )
+
+    points = portfolio_points_from_clients(clients)
+
+    assert len(points) == 1
+    assert points[0]["label"] == "Valide"
+    assert points[0]["latitude"] == 49.18
+    assert points[0]["longitude"] == -0.37
+    assert clients.iloc[0]["latitude"] == "49.18"
+    assert portfolio_points_from_clients(clients.iloc[:0]) == []
+
+
+def test_portfolio_view_centers_bounds_even_when_most_clients_are_clustered() -> None:
+    view = _points_view(
+        [{"latitude": 48, "longitude": 0}] * 100
+        + [{"latitude": 50, "longitude": 10}]
+    )
+
+    assert view.latitude == 49
+    assert view.longitude == 5
 
 
 def test_persistent_labels_use_literal_alignment_and_visible_background() -> None:

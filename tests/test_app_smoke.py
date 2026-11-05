@@ -164,6 +164,12 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
 
         assert not app.exception
         assert app.subheader[0].value == "Préparer la tournée"
+        assert app.toggle[0].label == "Afficher le calque portefeuille"
+        assert app.toggle[0].value is True
+        assert len(app.get("deck_gl_json_chart")) == 1
+
+        app.toggle[0].set_value(False).run()
+        assert len(app.get("deck_gl_json_chart")) == 0
         assert labels[-2:] == [
             "Commercial",
             "Entreprise de départ",
@@ -199,8 +205,21 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
 
         assert not app.exception
         assert [toggle.label for toggle in app.toggle] == [
-            "Afficher le calque des possibilités"
+            "Afficher le calque portefeuille"
         ]
+        assert app.toggle[0].value is False
+
+        next(button for button in app.button if button.label == "Se déconnecter").click().run()
+        assert "route_plan" not in app.session_state
+        assert "route_overlay_candidates" not in app.session_state
+        assert "portfolio_layer_visible" not in app.session_state
+
+        app.text_input[0].input("administrateur-test")
+        app.text_input[1].input("mot-de-passe-admin-test-long")
+        app.button[0].click().run()
+        assert not app.exception
+        assert app.toggle[0].value is True
+        assert len(app.get("deck_gl_json_chart")) == 1
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
@@ -246,8 +265,9 @@ def test_possibility_overlay_is_available_to_an_atc(monkeypatch) -> None:
 
         assert not app.exception
         assert [toggle.label for toggle in app.toggle] == [
-            "Afficher le calque des possibilités"
+            "Afficher le calque portefeuille"
         ]
+        assert app.toggle[0].value is True
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
@@ -302,6 +322,10 @@ def test_local_rag_test_account_uses_its_configured_scope(monkeypatch) -> None:
             if selectbox.label == "Commercial"
             for option in selectbox.options
         )
+        assert app.toggle[0].value is True
+        chart = app.get("deck_gl_json_chart")[0]
+        points = json.loads(chart.proto.json)["layers"][0]["data"]
+        assert {point["label"] for point in points} == {"Meline client", "Aurelie client"}
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)

@@ -9,6 +9,10 @@ Pour l'export des membres Entra et le provisionnement en masse des périmètres 
 [EXPORT_ENTRA.md](EXPORT_ENTRA.md). Le présent document couvre l'infrastructure ; cet autre guide
 couvre l'opération d'administration fonctionnelle.
 
+Pour les reconnexions, déconnexions et demandes de certificat sur mobile, suivre le diagnostic
+[AUTH_MOBILE.md](AUTH_MOBILE.md), qui distingue la session Streamlit de l'identification de l'appareil
+par Microsoft Entra.
+
 ## Architecture cible et responsabilités
 
 ```text
