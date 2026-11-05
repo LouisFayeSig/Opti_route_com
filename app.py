@@ -1770,7 +1770,7 @@ with map_column:
     plan: RoutePlan | None = st.session_state.get("route_plan")
     show_possibility_layer = st.toggle(
         "Afficher le calque portefeuille",
-        value=True,
+        value=False,
         key="portfolio_layer_visible",
         help=(
             "Affiche les entreprises géocodées selon le périmètre choisi ci-dessous. "

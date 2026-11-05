@@ -173,7 +173,10 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         assert not app.exception
         assert app.subheader[0].value == "Préparer la tournée"
         assert app.toggle[0].label == "Afficher le calque portefeuille"
-        assert app.toggle[0].value is True
+        assert app.toggle[0].value is False
+        assert len(app.get("deck_gl_json_chart")) == 0
+
+        app.toggle[0].set_value(True).run()
         assert len(app.get("deck_gl_json_chart")) == 1
 
         app.toggle[0].set_value(False).run()
@@ -226,8 +229,8 @@ def test_user_route_form_renders_migration_workflow(monkeypatch) -> None:
         app.text_input[1].input("mot-de-passe-admin-test-long")
         app.button[0].click().run()
         assert not app.exception
-        assert app.toggle[0].value is True
-        assert len(app.get("deck_gl_json_chart")) == 1
+        assert app.toggle[0].value is False
+        assert len(app.get("deck_gl_json_chart")) == 0
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
@@ -275,6 +278,8 @@ def test_possibility_overlay_is_available_to_an_atc(monkeypatch) -> None:
         assert [toggle.label for toggle in app.toggle] == [
             "Afficher le calque portefeuille"
         ]
+        assert app.toggle[0].value is False
+        app.toggle[0].set_value(True).run()
         assert app.toggle[0].value is True
     finally:
         for suffix in ("", "-wal", "-shm"):
@@ -330,7 +335,8 @@ def test_local_rag_test_account_uses_its_configured_scope(monkeypatch) -> None:
             if selectbox.label == "Commercial"
             for option in selectbox.options
         )
-        assert app.toggle[0].value is True
+        assert app.toggle[0].value is False
+        app.toggle[0].set_value(True).run()
         chart = app.get("deck_gl_json_chart")[0]
         points = json.loads(chart.proto.json)["layers"][0]["data"]
         assert {point["label"] for point in points} == {"Meline client", "Aurelie client"}
@@ -447,6 +453,9 @@ def regional_app(monkeypatch):
         app.text_input[1].input("test-secret")
         app.button[0].click().run()
         assert not app.exception
+        assert app.toggle[0].value is False
+        assert not app.get("deck_gl_json_chart")
+        app.toggle[0].set_value(True).run()
         return app
 
     try:

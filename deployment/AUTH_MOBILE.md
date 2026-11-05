@@ -82,7 +82,8 @@ Références : [authentification Streamlit](https://docs.streamlit.io/develop/co
 
 Tester avec un ATC, un RAG et un DR sur un téléphone géré : ouverture du lien, connexion, fermeture
 et réouverture, expiration de session puis déconnexion/reconnexion avec un autre compte. À chaque
-nouvelle connexion, le calque portefeuille doit être actif et limité au périmètre du compte.
+nouvelle connexion, le calque portefeuille doit être désactivé. Après activation manuelle, il doit
+rester limité au périmètre du compte.
 Le masquage doit persister pendant les calculs et recalculs de la même session. Le compte suivant
 ne doit retrouver ni la tournée ni les exports du précédent. Consigner séparément les demandes
 Microsoft (MFA, certificat, conformité) et les erreurs applicatives.

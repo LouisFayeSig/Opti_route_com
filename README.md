@@ -27,7 +27,7 @@ de provisionnement des périmètres est dans [deployment/EXPORT_ENTRA.md](deploy
 - matrice routière Azure Maps et optimisation OR-Tools ;
 - affichage Azure Maps, ordre des visites et indicateurs ;
 - noms des entreprises affichés directement à côté des points sur la carte ;
-- portefeuille autorisé affiché sur la carte dès la connexion, avec un calque activé par défaut et masquable ; après calcul, entreprises non retenues en jaune dans le rayon administrateur de départ et en vert hors rayon, sans géocodage additionnel ;
+- calque portefeuille désactivé par défaut, activable avec des vues adaptées au rôle ; après calcul, entreprises non retenues en jaune dans le rayon administrateur de départ et en vert hors rayon, sans géocodage additionnel ;
 - export PDF avec capture cartographique numérotée, ainsi que partage vers Google Maps ;
 - neutralisation des cellules pouvant être interprétées comme des formules dans les exports ;
 - noms d'exports horodatés pour éviter les doublons ;
@@ -326,9 +326,9 @@ complete : par exemple `10-03-82` pour Yvon RONDEL. `10` est l'UG, `03` l'agence
 Le seul `code ATC` (`82`) n'est pas utilise comme identifiant, car il peut etre present
 dans plusieurs agences.
 
-Le calque portefeuille est activé par défaut à chaque nouvelle connexion et montre l'ensemble
-du périmètre autorisé, avant même de choisir un départ ou de calculer une tournée. Il peut être
-masqué pour le confort visuel ; ce choix reste conservé pendant la session, y compris après un
+Le calque portefeuille est désactivé par défaut à chaque nouvelle connexion. L'utilisateur peut
+l'activer avec **Afficher le calque portefeuille**, avant ou après le calcul d'une tournée, puis
+choisir son périmètre d'affichage. Ce choix reste conservé pendant la session, y compris après un
 calcul ou un recalcul. L'affichage ne géocode aucune nouvelle adresse : les
 entreprises sans coordonnees sont simplement absentes du calque. L'import produit aussi
 un bouton de telechargement d'une copie Excel enrichie des colonnes `Latitude` et `Longitude`.
@@ -338,7 +338,7 @@ l'administrateur. Une adresse deja presente dans le cache ne genere pas un nouve
 
 Le **Périmètre du calque** propose des vues adaptées au rôle connecté :
 
-| Rôle | Vues disponibles | Vue initiale |
+| Rôle | Vues disponibles | Vue proposée à l'activation du calque |
 | --- | --- | --- |
 | ATC | Son portefeuille uniquement | Son portefeuille |
 | RAG | Commercial sélectionné, un ou plusieurs portefeuilles, agences, tout son périmètre | Tous ses portefeuilles sélectionnés |
