@@ -13,6 +13,7 @@ from PIL import ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .geocoding_validation import coordinates_match_address, geocoding_bbox, geocoding_query
 from .image_labels import draw_stop_labels
 
 
@@ -132,15 +133,21 @@ class AzureMapsClient:
         return None
 
     def geocode(self, address: str) -> GeocodeResult:
-        safe_query = self._safe_geocode_query(address)
+        safe_query = self._safe_geocode_query(geocoding_query(address))
+        params = {"api-version": self.API_VERSION, "query": safe_query, "top": 1}
+        bbox = geocoding_bbox(address)
+        if bbox:
+            params["bbox"] = bbox
         payload = self._request_json(
             "GET",
             "/geocode",
-            params={"api-version": self.API_VERSION, "query": safe_query, "top": 1},
+            params=params,
             headers=self._headers,
         )
         result = self._parse_geocode(payload, address)
         if result is not None:
+            if not coordinates_match_address(result.latitude, result.longitude, address=address):
+                raise AzureMapsError("Résultat rejeté : coordonnées incompatibles avec l'adresse.")
             return result
         raise AzureMapsError(f"Aucun résultat de géocodage pour « {address} ».")
 

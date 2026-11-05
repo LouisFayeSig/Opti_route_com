@@ -110,3 +110,5 @@ def test_admin_possibility_overlay_classifies_companies_from_the_start() -> None
     assert {point["label"] for point in points} == {"Possibilité", "Plus loin"}
     assert {point["color"] for point in points} == {"#FBBF24", "#22C55E"}
     assert {point["color"] for point in _map_points(plan)[1:]} == {"#D32F2F"}
+    for candidates in (all_companies.iloc[:0], route_clients):
+        assert possibility_points_from_candidates(plan, candidates, "START") == ([], 0, 0, 20)

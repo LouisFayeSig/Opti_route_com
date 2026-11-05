@@ -67,6 +67,19 @@ def test_store_round_trip_keeps_only_normalized_portfolio(store_path: Path) -> N
     assert loaded_metadata == metadata
 
 
+def test_loading_an_existing_portfolio_rejects_bad_coordinates(store_path: Path) -> None:
+    store = AppStore(store_path)
+    clients = _clients()
+    clients.loc[0, "longitude"] = 40
+    metadata = store.save_clients(clients, source_name="clients.xlsx", imported_by="Test")
+
+    loaded, loaded_metadata = store.load_clients()
+
+    assert loaded_metadata == metadata
+    assert loaded.loc[0, ["latitude", "longitude"]].isna().all()
+    assert loaded.attrs["rejected_coordinate_count"] == 1
+
+
 def test_store_rejects_a_portfolio_without_salesperson(store_path: Path) -> None:
     store = AppStore(store_path)
 

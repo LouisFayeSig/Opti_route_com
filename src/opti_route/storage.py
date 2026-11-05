@@ -13,6 +13,8 @@ from typing import Protocol
 
 import pandas as pd
 
+from .geocoding_validation import sanitize_client_coordinates
+
 
 class StorageError(RuntimeError):
     """Le stockage applicatif ne peut pas être lu ou mis à jour."""
@@ -207,7 +209,7 @@ def deserialize_portfolio(payload: str, metadata: PortfolioMetadata) -> pd.DataF
     clients["longitude"] = pd.to_numeric(clients["longitude"], errors="coerce")
     if len(clients) != metadata.row_count:
         raise StorageError("Le nombre de lignes du portefeuille stocké est incohérent.")
-    return clients
+    return sanitize_client_coordinates(clients)
 
 
 class ApplicationStore(Protocol):

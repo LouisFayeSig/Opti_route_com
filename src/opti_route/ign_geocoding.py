@@ -10,6 +10,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .azure_maps import GeocodeResult
+from .geocoding_validation import (
+    coordinates_match_address,
+    geocoding_query,
+    postal_code_from_address,
+)
 
 
 class IgnGeocodingError(RuntimeError):
@@ -62,10 +67,14 @@ class IgnGeocodingClient:
 
     def _request_json(self, address: str) -> dict[str, Any]:
         self._respect_rate_limit()
+        params = {"q": self._safe_query(geocoding_query(address)), "limit": 1, "index": "address"}
+        postcode = postal_code_from_address(address)
+        if postcode:
+            params["postcode"] = postcode
         try:
             response = self.session.get(
                 self.endpoint,
-                params={"q": self._safe_query(address), "limit": 1, "index": "address"},
+                params=params,
                 headers={
                     "Accept": "application/json",
                     "User-Agent": "OptiRoute/1.0 (geocodage import portefeuille)",
@@ -122,4 +131,6 @@ class IgnGeocodingClient:
         result = self._parse(payload, address)
         if result is None:
             raise IgnGeocodingError(f"Aucun resultat IGN/BAN pour \u00ab {address} \u00bb.")
+        if not coordinates_match_address(result.latitude, result.longitude, address=address):
+            raise IgnGeocodingError("Résultat rejeté : coordonnées incompatibles avec l'adresse.")
         return result

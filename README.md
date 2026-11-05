@@ -256,7 +256,23 @@ pas sont géocodées par le service public IGN / Base Adresse Nationale et mises
 de 50 appels/IP/seconde. Le portefeuille enrichi est alors stocké ; les tournées et le calque ne
 relancent donc pas de géocodage pour ces clients. En cas d'échec IGN/BAN, Azure Maps est sollicité
 en repli lorsqu'il est configuré (`GEOCODING_AZURE_FALLBACK=true`) ; il n'est jamais appelé pour une
-adresse déjà géocodée ou retrouvée dans le cache.
+adresse dont les coordonnées existantes ou mises en cache sont cohérentes avec la zone attendue.
+
+Les coordonnées sont contrôlées à l'import, à la lecture du portefeuille enregistré, dans le cache
+et à chaque réponse des géocodeurs. Pour ce portefeuille, un code postal à cinq chiffres impose
+la France lorsqu'aucun pays étranger explicite n'est renseigné ; les codes `980xx` et la ville de
+Monaco sont traités comme Monaco. Les pays étrangers explicites sont conservés, notamment l'Italie,
+le Luxembourg et le Portugal présents dans le fichier définitif. Les codes ultramarins
+utilisent des enveloppes distinctes : une adresse métropolitaine ne peut pas être acceptée aux
+Antilles ou en Polynésie. Les zéros initiaux des codes postaux français numériques sont restaurés.
+
+IGN reçoit le code postal comme filtre et Azure Maps une enveloppe de recherche. Les positions
+hors zone sont rejetées, y compris lorsqu'elles sont déjà présentes dans Excel ou dans un ancien
+cache. L'import les géocode à nouveau ; pour un portefeuille déjà enregistré, le panneau
+**Administration > Import** signale les positions écartées et permet de relancer leur recherche.
+Si aucun résultat cohérent n'est trouvé, les coordonnées restent vides et sont aussi effacées dans
+la copie Excel exportée. Ces enveloppes détectent les erreurs géographiques grossières ; elles ne
+garantissent pas la précision à la rue ou à la commune près.
 
 Lorsqu'une adresse reste introuvable après les deux recherches, l'administrateur peut la corriger
 directement depuis le panneau d'import, puis relancer uniquement les adresses concernées. L'import
@@ -319,6 +335,27 @@ un bouton de telechargement d'une copie Excel enrichie des colonnes `Latitude` e
 Cette copie doit remplacer le fichier source pour conserver les coordonnees dans le temps ;
 un navigateur ne peut pas modifier silencieusement le fichier d'origine sur le poste de
 l'administrateur. Une adresse deja presente dans le cache ne genere pas un nouvel appel au geocodeur.
+
+Le **Périmètre du calque** propose des vues adaptées au rôle connecté :
+
+| Rôle | Vues disponibles | Vue initiale |
+| --- | --- | --- |
+| ATC | Son portefeuille uniquement | Son portefeuille |
+| RAG | Commercial sélectionné, un ou plusieurs portefeuilles, agences, tout son périmètre | Tous ses portefeuilles sélectionnés |
+| DR | Commercial sélectionné, portefeuilles, agences, sa région commerciale, tout son périmètre | Sa région commerciale |
+| ADMIN | Commercial sélectionné, portefeuilles, agences, régions commerciales, tout le portefeuille | Toutes les régions configurées ; sinon tout le portefeuille |
+
+Les régions commerciales reprennent les groupes d'UG des habilitations DR, issus de **Code Region**
+de la feuille **Utilisateurs** lors du provisionnement. Par exemple, `20-24-31-34` constitue une
+seule région regroupant quatre UG. L'administrateur retrouve les régions sous le nom du DR et leurs
+codes UG. Les clients sans région configurée restent accessibles dans un choix distinct. Si aucune
+région n'est configurée, les autres vues restent disponibles et un message explique où les définir.
+
+Les filtres sont calculés après application des habilitations : un RAG ou un DR ne peut pas élargir
+son accès en choisissant une agence, une région ou **Tout mon périmètre**. La vue **Commercial
+sélectionné** suit le choix effectué dans la préparation de tournée. Les sélections du calque sont
+conservées pendant la session, même en changeant de vue ou en masquant la carte. Une sélection vide
+affiche un calque vide. Ces filtres ne modifient pas la tournée calculée, qui reste visible.
 
 ## Tests
 

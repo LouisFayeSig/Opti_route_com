@@ -77,7 +77,7 @@ def possibility_points_from_candidates(
 ) -> tuple[list[dict[str, object]], int, int, float]:
     """Classe les entreprises hors tournée selon le rayon configuré depuis le départ."""
     if candidates.empty:
-        return [], 0, 0, 0.0
+        return [], 0, 0, plan.radius_km
 
     route_ids = set(plan.table["Code client"].astype(str))
     excluded_ids = route_ids | ({str(start_client_id)} if start_client_id else set())
@@ -90,7 +90,7 @@ def possibility_points_from_candidates(
         & ~points["client_id"].astype(str).isin(excluded_ids)
     ]
     if points.empty:
-        return [], 0, 0, 0.0
+        return [], 0, 0, plan.radius_km
 
     start_latitude = np.radians(plan.start.latitude)
     start_longitude = np.radians(plan.start.longitude)

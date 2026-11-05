@@ -25,6 +25,7 @@ from opti_route.auth import (
 from opti_route.azure_maps import AzureMapsClient
 from opti_route.cache import GeocodeCache
 from opti_route.config import Settings, load_settings
+from opti_route.contact import CONTACT_EMAIL, feedback_mailto, support_mailto
 from opti_route.data import (
     ALIASES,
     ClientDataError,
@@ -53,6 +54,19 @@ from opti_route.planner import (
     StartPoint,
     build_route_plan,
     rebuild_route_plan,
+)
+from opti_route.portfolio_view import (
+    SCOPE_AGENCY,
+    SCOPE_PORTFOLIOS,
+    SCOPE_REGION,
+    CommercialRegion,
+    commercial_regions,
+    default_map_scope,
+    filter_map_clients,
+    map_scope_options,
+)
+from opti_route.portfolio_view import (
+    salesperson_keys as portfolio_salesperson_keys,
 )
 from opti_route.provisioning import (
     ProvisioningError,
@@ -172,6 +186,12 @@ def _address_correction_panel(
     if current_clients is None:
         return
 
+    rejected_coordinates = current_clients.attrs.get("rejected_coordinate_count", 0)
+    if rejected_coordinates:
+        st.warning(
+            f"{rejected_coordinates} position(s) incohérente(s) avec les adresses ont été écartées. "
+            "Relancez leur géocodage ci-dessous pour corriger le portefeuille enregistré."
+        )
     missing_mask = current_clients[["latitude", "longitude"]].isna().any(axis=1)
     unresolved = current_clients.loc[missing_mask].copy()
     if unresolved.empty:
@@ -499,6 +519,12 @@ def _admin_import_panel(
 
     try:
         clients = standardize_clients(raw, column_mapping=mapping)
+        rejected_coordinates = clients.attrs.get("rejected_coordinate_count", 0)
+        if rejected_coordinates:
+            st.warning(
+                f"{rejected_coordinates} position(s) incohérente(s) avec les adresses du fichier "
+                "seront géocodées à nouveau lors de l'enregistrement."
+            )
         salespeople = clients["salesperson"].fillna("").astype(str).str.strip()
         missing_salesperson_count = int((salespeople.eq("") | salespeople.eq("Tous")).sum())
         if missing_salesperson_count:
@@ -1039,6 +1065,85 @@ def _configured_local_test_profile(
     ).validated()
 
 
+def _remember_map_filter(widget_key: str, preference_key: str) -> None:
+    st.session_state[preference_key] = st.session_state[widget_key]
+
+
+def _map_scope_selection(
+    label: str,
+    options: list[str],
+    *,
+    key: str,
+    labels: dict[str, str] | None = None,
+    disabled: bool = False,
+) -> list[str]:
+    preference_key = f"{key}_selection"
+    remembered = st.session_state.get(preference_key, options)
+    return st.multiselect(
+        label,
+        options,
+        default=[value for value in remembered if value in options],
+        format_func=lambda value: labels.get(value, value) if labels else value,
+        key=key,
+        disabled=disabled,
+        on_change=_remember_map_filter,
+        args=(key, preference_key),
+    )
+
+
+def _map_portfolio_scope(
+    user: AuthenticatedUser,
+    clients: pd.DataFrame,
+    active_salesperson_key: str,
+    salesperson_labels: dict[str, str],
+    regions: dict[str, CommercialRegion],
+    source_signature: str,
+    *,
+    visible: bool,
+) -> pd.DataFrame:
+    options = map_scope_options(user.role, clients, regions)
+    prefix = "map_scope_" + hashlib.sha1(source_signature.encode()).hexdigest()[:12]
+    scope = options[0]
+    portfolios: list[str] = []
+    agencies: list[str] = []
+    selected_regions: list[str] = []
+    if len(options) > 1:
+        with st.container(border=True):
+            scope = st.radio(
+                "Périmètre du calque",
+                options,
+                index=options.index(default_map_scope(user.role, options)),
+                horizontal=True,
+                key=f"{prefix}_level",
+                disabled=not visible,
+            )
+            if scope == SCOPE_PORTFOLIOS:
+                portfolios = _map_scope_selection(
+                    "Portefeuilles à afficher", list(salesperson_labels),
+                    labels=salesperson_labels, key=f"{prefix}_portfolios", disabled=not visible,
+                )
+            elif scope == SCOPE_AGENCY:
+                available_agencies = sorted(
+                    {value.strip() for value in clients["agency"].fillna("").astype(str) if value.strip()},
+                    key=str.casefold,
+                )
+                agencies = _map_scope_selection(
+                    "Agences à afficher", available_agencies,
+                    key=f"{prefix}_agencies", disabled=not visible,
+                )
+            elif scope == SCOPE_REGION:
+                selected_regions = _map_scope_selection(
+                    "Régions commerciales à afficher", list(regions),
+                    labels={key: region.label for key, region in regions.items()},
+                    key=f"{prefix}_regions", disabled=not visible,
+                )
+            st.caption("Ces vues restent limitées aux portefeuilles autorisés pour votre compte.")
+    return filter_map_clients(
+        clients, role=user.role, scope=scope, active_salesperson=active_salesperson_key,
+        portfolios=portfolios, agencies=agencies, region_keys=selected_regions, regions=regions,
+    )
+
+
 def _render_plan_summary(
     plan: RoutePlan, possibility_points: list[dict[str, object]] | None = None
 ) -> None:
@@ -1223,6 +1328,24 @@ with status_column:
 with account_column:
     render_account_controls(authenticated_user)
 
+with st.expander("Suggestions, avis et support", expanded=False):
+    st.caption(f"Contact : {CONTACT_EMAIL} · Choisissez le sujet pour ouvrir un e-mail prérempli.")
+    contact_name = authenticated_user.display_name if authenticated_user.method != "none" else ""
+    contact_email = (
+        authenticated_user.principal_name if "@" in authenticated_user.principal_name else ""
+    )
+    feedback_column, support_column = st.columns(2)
+    feedback_column.link_button(
+        "Partager une suggestion ou un avis",
+        feedback_mailto(contact_name, contact_email),
+        use_container_width=True,
+    )
+    support_column.link_button(
+        "Contacter le support",
+        support_mailto(contact_name, contact_email),
+        use_container_width=True,
+    )
+
 try:
     store = _initialize_app_store(settings)
     clients, portfolio_metadata, route_configuration = _load_persistent_app_state(
@@ -1280,14 +1403,7 @@ salesperson_rows = salesperson_rows[
 salesperson_rows["salesperson_email"] = (
     salesperson_rows["salesperson_email"].str.strip().str.casefold()
 )
-salesperson_rows["salesperson_key"] = salesperson_rows["salesperson_email"]
-missing_salesperson_email = salesperson_rows["salesperson_key"].eq("")
-salesperson_rows.loc[missing_salesperson_email, "salesperson_key"] = (
-    "code:"
-    + salesperson_rows.loc[missing_salesperson_email, "salesperson_code"].str.strip().str.casefold()
-    + "|name:"
-    + salesperson_rows.loc[missing_salesperson_email, "salesperson"].str.strip().str.casefold()
-)
+salesperson_rows["salesperson_key"] = portfolio_salesperson_keys(salesperson_rows)
 salesperson_rows = (
     salesperson_rows.drop_duplicates(subset=["salesperson_key"], keep="first")
     .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
@@ -1644,10 +1760,6 @@ with controls_column:
                     + " · ".join(geocode_errors[:3])
                 )
             st.session_state["route_plan"] = plan
-            # Le calque est limite au portefeuille deja autorise pour la
-            # session. Il est disponible a tous les roles, sans elargir le
-            # perimetre de donnees.
-            st.session_state["route_overlay_candidates"] = scoped_clients.copy()
             st.session_state["route_overlay_start_client_id"] = start_client_id
         except (PlanningError, ClientDataError, StorageError, ValueError) as exc:
             st.error(str(exc))
@@ -1661,19 +1773,39 @@ with map_column:
         value=True,
         key="portfolio_layer_visible",
         help=(
-            "Affiche toutes les entreprises géocodées de votre périmètre autorisé. "
+            "Affiche les entreprises géocodées selon le périmètre choisi ci-dessous. "
             "Après calcul : jaune dans le rayon de départ, vert hors rayon, rouge dans la tournée. "
             "Vous pouvez masquer ce calque pour alléger la carte."
         ),
     )
+    region_profiles: list[UserAccessProfile] = []
+    if authenticated_user.is_dr and access_profile is not None:
+        region_profiles = [access_profile]
+    elif authenticated_user.is_admin:
+        try:
+            region_profiles = store.list_access_profiles()
+        except StorageError:
+            st.warning("Les régions commerciales sont indisponibles ; les autres vues restent accessibles.")
+    regions = commercial_regions(scoped_clients, region_profiles)
+    displayed_clients = _map_portfolio_scope(
+        authenticated_user, scoped_clients, active_salesperson_key, salesperson_labels,
+        regions, source_signature, visible=show_possibility_layer,
+    )
+    if not regions and authenticated_user.is_admin and scoped_clients["ug"].notna().any():
+        st.caption("Pour la vue région, renseignez les groupes d'UG dans les habilitations DR.")
+    if show_possibility_layer:
+        st.caption(
+            f"{len(displayed_clients)} entreprise(s) dans le calque · "
+            f"{len(scoped_clients)} dans votre périmètre autorisé"
+        )
     if plan is None:
-        portfolio_points = portfolio_points_from_clients(scoped_clients)
+        portfolio_points = portfolio_points_from_clients(displayed_clients)
         if show_possibility_layer and portfolio_points:
             st.subheader("Votre portefeuille")
             render_portfolio_map(portfolio_points)
             st.caption(f"{len(portfolio_points)} entreprise(s) de votre portefeuille sur la carte.")
         elif show_possibility_layer:
-            st.info("Aucune entreprise de votre portefeuille ne possède de coordonnées exploitables.")
+            st.info("Aucune entreprise géocodée ne correspond aux filtres du calque.")
         else:
             st.markdown(
                 """
@@ -1685,7 +1817,7 @@ with map_column:
                 """,
                 unsafe_allow_html=True,
             )
-        missing_count = len(scoped_clients) - len(portfolio_points)
+        missing_count = len(displayed_clients) - len(portfolio_points)
         if show_possibility_layer and missing_count:
             st.caption(
                 f"{missing_count} entreprise(s) sans coordonnées exploitables ne sont pas affichées. "
@@ -1694,9 +1826,7 @@ with map_column:
     else:
         possibility_points: list[dict[str, object]] | None = None
         if show_possibility_layer:
-            overlay_candidates = st.session_state.get(
-                "route_overlay_candidates", scoped_clients
-            )
+            overlay_candidates = displayed_clients
             missing_overlay_coordinates = (
                 overlay_candidates["latitude"].isna()
                 | overlay_candidates["longitude"].isna()
@@ -1722,6 +1852,7 @@ with map_column:
                     "ne sont pas affichées dans le calque. Aucun géocodage supplémentaire "
                     "n'est lancé."
                 )
+        st.caption("La tournée calculée reste visible quel que soit le périmètre du calque choisi.")
         _render_plan_summary(plan, possibility_points=possibility_points)
 
 plan = st.session_state.get("route_plan")

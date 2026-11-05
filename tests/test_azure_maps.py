@@ -92,6 +92,18 @@ def test_geocoding_uses_2025_api_and_lon_lat_order() -> None:
     assert session.calls[0][2]["params"]["api-version"] == "2025-01-01"
 
 
+def test_geocoding_biases_the_search_and_rejects_results_outside_france() -> None:
+    client = AzureMapsClient("https://example.test", "secret")
+    client.session = FakeSession([FakeResponse({"features": [{
+        "geometry": {"coordinates": [40, 44]}, "properties": {},
+    }]})])
+
+    with pytest.raises(AzureMapsError, match="Résultat rejeté"):
+        client.geocode("1 rue du Test, 30350, Lézan, France")
+
+    assert client.session.calls[0][2]["params"]["bbox"] == "-5.6,41.0,10.0,51.6"
+
+
 def test_geocoding_sanitizes_apostrophes_blocked_by_proxies() -> None:
     session = FakeSession(
         [

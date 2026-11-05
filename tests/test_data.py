@@ -267,6 +267,40 @@ def test_geocoded_workbook_preserves_other_sheets_and_adds_coordinates() -> None
     assert enriched_listing["Longitude"].tolist() == [-0.37, -0.38]
 
 
+def test_import_rejects_existing_bad_coordinates_and_normalizes_monaco() -> None:
+    raw = pd.DataFrame({
+        "Client": ["LM Agencement", "MC BAT", "Delta Pose"],
+        "Adresse": ["1 rue du Test"] * 3,
+        "cp": ["30350", "98000", "14000"],
+        "ville": ["Lézan", "Monaco", "Caen"],
+        "Pays": ["France", "France", "France"],
+        "Latitude": [44, -25, 23],
+        "Longitude": [40, -140, -60],
+    })
+
+    clients = standardize_clients(raw)
+
+    assert clients[["latitude", "longitude"]].isna().all(axis=None)
+    assert clients["country"].tolist() == ["France", "Monaco", "France"]
+    assert clients.attrs["rejected_coordinate_count"] == 3
+    assert clients.loc[1, "full_address"].endswith("98000, Monaco, Monaco")
+
+
+def test_workbook_export_really_clears_rejected_existing_coordinates() -> None:
+    workbook = BytesIO()
+    raw = pd.DataFrame({"Client": ["LM Agencement"], "Latitude": [44], "Longitude": [40]})
+    raw.to_excel(workbook, sheet_name="Listing client", index=False)
+
+    result = geocoded_workbook_bytes(
+        workbook.getvalue(), suffix=".xlsx", sheet_name="Listing client", header_line=1,
+        raw=raw, clients=pd.DataFrame({"latitude": [float("nan")], "longitude": [float("nan")]}),
+    )
+
+    exported = pd.read_excel(BytesIO(result))
+    assert pd.isna(exported.loc[0, "Latitude"])
+    assert pd.isna(exported.loc[0, "Longitude"])
+
+
 def test_upload_validation_rejects_fake_office_archives() -> None:
     with pytest.raises(ClientDataError, match="invalide ou corrompu"):
         validate_uploaded_file(b"not-an-office-file", "clients.xlsx")

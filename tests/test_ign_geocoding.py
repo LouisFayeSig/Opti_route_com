@@ -62,6 +62,7 @@ def test_geocoding_uses_ign_ban_endpoint_and_lon_lat_order() -> None:
         "q": "1 rue du test, 14000 Caen",
         "limit": 1,
         "index": "address",
+        "postcode": "14000",
     }
 
 
@@ -71,6 +72,18 @@ def test_geocoding_reports_no_match_without_exposing_response() -> None:
 
     with pytest.raises(IgnGeocodingError, match="Aucun resultat IGN/BAN"):
         client.geocode("Adresse inconnue")
+
+
+def test_geocoding_rejects_a_point_outside_the_postcode_region() -> None:
+    client = IgnGeocodingClient("https://example.test/geocodage/search")
+    client.session = FakeSession([FakeResponse({"features": [{
+        "geometry": {"coordinates": [40, 44]}, "properties": {},
+    }]})])
+
+    with pytest.raises(IgnGeocodingError, match="Résultat rejeté"):
+        client.geocode("1 rue du Test, 30350, Lézan, France")
+
+    assert client.session.calls[0][1]["params"]["postcode"] == "30350"
 
 
 def test_geocoding_sanitizes_proxy_sensitive_characters() -> None:

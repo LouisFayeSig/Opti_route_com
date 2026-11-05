@@ -3,9 +3,17 @@ from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
+import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from opti_route.portfolio_view import (
+    SCOPE_AGENCY,
+    SCOPE_ALL,
+    SCOPE_COMMERCIAL,
+    SCOPE_PORTFOLIOS,
+    SCOPE_REGION,
+)
 from opti_route.storage import AppStore, UserAccessProfile
 
 
@@ -398,3 +406,126 @@ def test_admin_account_can_access_portfolio_import(monkeypatch) -> None:
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
+
+
+@pytest.fixture
+def regional_app(monkeypatch):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    monkeypatch.setenv("AUTH_MODE", "password")
+    monkeypatch.setenv("AUTH_USERNAME", "")
+    monkeypatch.setenv("AUTH_PASSWORD", "")
+    monkeypatch.setenv("ADMIN_USERNAME", "test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "test-secret")
+    monkeypatch.setenv("AZURE_MAPS_SUBSCRIPTION_KEY", "")
+    monkeypatch.setenv("AZURE_MAPS_KEY", "")
+    monkeypatch.setenv("LOCAL_TEST_ACCOUNTS_JSON", json.dumps([
+        {"username": "test-rag", "password": "test-secret", "role": "rag",
+         "rag_email": "rag@example.test"},
+        {"username": "test-dr", "password": "test-secret", "role": "dr", "ugs": ["20", "24"]},
+        {"username": "test-atc", "password": "test-secret", "role": "atc", "atc_code": "20-01-001"},
+    ]))
+    storage_path = Path(".cache") / f"regional-map-test-{uuid4().hex}.sqlite3"
+    store = AppStore(storage_path)
+    clients = _portfolio_for_local_test_accounts()
+    clients["ug"] = ["20", "24", "40"]
+    clients["agency"] = ["20-01", "24-01", "40-01"]
+    clients["salesperson_code"] = ["20-01-001", "24-01-002", "40-01-003"]
+    clients["rag_email"] = ["rag@example.test", "rag@example.test", "other@example.test"]
+    store.save_clients(clients, source_name="regions.xlsx", imported_by="Test")
+    for profile in (
+        UserAccessProfile("dr-ouest", "DR Ouest", "dr", ugs=("20", "24")),
+        UserAccessProfile("dr-idf", "DR IDF", "dr", ugs=("40",)),
+    ):
+        store.save_access_profile(profile, updated_by="Test")
+    monkeypatch.setenv("APP_STORAGE_PATH", str(storage_path.resolve()))
+
+    def login(username: str) -> AppTest:
+        app_path = Path(__file__).parents[1] / "app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=30).run()
+        app.text_input[0].input(username)
+        app.text_input[1].input("test-secret")
+        app.button[0].click().run()
+        assert not app.exception
+        return app
+
+    try:
+        yield login
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
+
+
+def _map_labels(app: AppTest) -> set[str]:
+    chart = app.get("deck_gl_json_chart")[0]
+    data = json.loads(chart.proto.json)["layers"][0]["data"]
+    return {point["label"] for point in data}
+
+
+def test_admin_can_choose_a_commercial_region_and_keep_it_when_switching_views(regional_app) -> None:
+    app = regional_app("test-admin")
+    scope = next(radio for radio in app.radio if radio.label == "Périmètre du calque")
+    assert scope.value == SCOPE_REGION
+    assert _map_labels(app) == {"Sarah client", "Meline client", "Aurelie client"}
+
+    regions = next(item for item in app.multiselect if item.label == "Régions commerciales à afficher")
+    assert len(regions.options) == 2
+    regions.set_value(["20-24"]).run()
+    assert _map_labels(app) == {"Sarah client", "Meline client"}
+
+    next(item for item in app.radio if item.label == "Périmètre du calque").set_value(SCOPE_COMMERCIAL).run()
+    next(item for item in app.selectbox if item.label == "Commercial").select("s.edir@litt.fr").run()
+    assert _map_labels(app) == {"Sarah client"}
+    next(item for item in app.selectbox if item.label == "Commercial").select("m.trillaudstbrieuc@litt.fr").run()
+    assert _map_labels(app) == {"Meline client"}
+
+    next(item for item in app.radio if item.label == "Périmètre du calque").set_value(SCOPE_REGION).run()
+    assert _map_labels(app) == {"Sarah client", "Meline client"}
+    app.toggle[0].set_value(False).run()
+    assert not app.get("deck_gl_json_chart")
+    app.toggle[0].set_value(True).run()
+    assert _map_labels(app) == {"Sarah client", "Meline client"}
+
+
+def test_rag_can_filter_portfolios_and_agencies_without_seeing_other_accounts(regional_app) -> None:
+    app = regional_app("test-rag")
+    scope = next(item for item in app.radio if item.label == "Périmètre du calque")
+    assert scope.value == SCOPE_PORTFOLIOS
+    assert SCOPE_REGION not in scope.options
+    portfolios = next(item for item in app.multiselect if item.label == "Portefeuilles à afficher")
+    assert len(portfolios.options) == 2
+    assert all("Aurelie" not in value for value in portfolios.options)
+    portfolios.set_value(["m.trillaudstbrieuc@litt.fr"]).run()
+    assert _map_labels(app) == {"Meline client"}
+
+    next(item for item in app.radio if item.label == "Périmètre du calque").set_value(SCOPE_AGENCY).run()
+    agencies = next(item for item in app.multiselect if item.label == "Agences à afficher")
+    assert set(agencies.options) == {"20-01", "24-01"}
+    agencies.set_value(["20-01"]).run()
+    assert _map_labels(app) == {"Sarah client"}
+
+    next(item for item in app.radio if item.label == "Périmètre du calque").set_value(SCOPE_PORTFOLIOS).run()
+    assert _map_labels(app) == {"Meline client"}
+    next(item for item in app.radio if item.label == "Périmètre du calque").set_value(SCOPE_ALL).run()
+    assert _map_labels(app) == {"Sarah client", "Meline client"}
+
+
+def test_dr_only_sees_its_commercial_region(regional_app) -> None:
+    app = regional_app("test-dr")
+    assert next(item for item in app.radio if item.label == "Périmètre du calque").value == SCOPE_REGION
+    regions = next(item for item in app.multiselect if item.label == "Régions commerciales à afficher")
+    assert len(regions.options) == 1
+    assert "20, 24" in regions.options[0]
+    assert _map_labels(app) == {"Sarah client", "Meline client"}
+
+    regions.set_value([]).run()
+    assert not app.exception
+    assert not app.get("deck_gl_json_chart")
+    app.run()
+    assert not app.get("deck_gl_json_chart")
+
+
+def test_atc_only_gets_its_own_portfolio_without_extra_scope_controls(regional_app) -> None:
+    app = regional_app("test-atc")
+    assert all(item.label != "Périmètre du calque" for item in app.radio)
+    assert _map_labels(app) == {"Sarah client"}

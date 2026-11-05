@@ -9,6 +9,12 @@ from typing import BinaryIO
 
 import pandas as pd
 
+from .geocoding_validation import (
+    expected_country,
+    normalize_postal_code,
+    sanitize_client_coordinates,
+)
+
 
 class ClientDataError(ValueError):
     """Le fichier clients ne peut pas être converti vers le schéma attendu."""
@@ -431,7 +437,17 @@ def standardize_clients(
     clients["country"] = clients["country"].replace("", pd.NA).fillna("France")
 
     # Excel transforme parfois les codes postaux en nombres décimaux.
-    clients["postal_code"] = clients["postal_code"].str.replace(r"\.0$", "", regex=True)
+    clients["country"] = [
+        expected_country(code, country, city)
+        for code, country, city in clients[["postal_code", "country", "city"]].itertuples(
+            index=False, name=None
+        )
+    ]
+    clients["postal_code"] = pd.Series(
+        [normalize_postal_code(code, country) for code, country in
+         clients[["postal_code", "country"]].itertuples(index=False, name=None)],
+        index=clients.index, dtype="string",
+    )
     clients["latitude"] = pd.to_numeric(
         clients["latitude"].astype("string").str.replace(",", ".", regex=False), errors="coerce"
     )
@@ -448,7 +464,7 @@ def standardize_clients(
     clients = clients[clients["client_name"].notna()].reset_index(drop=True)
     if clients.empty:
         raise ClientDataError("Aucun client nommé n'a été trouvé dans le fichier.")
-    return clients
+    return sanitize_client_coordinates(clients)
 
 
 def load_clients(

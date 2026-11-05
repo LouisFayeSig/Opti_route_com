@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import streamlit as st
 
 from .config import Settings
+from .contact import CONTACT_EMAIL, account_request_mailto
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -193,6 +194,12 @@ def _login_heading(description: str) -> None:
         unsafe_allow_html=True,
     )
     st.info(description, icon="🔐")
+    st.link_button(
+        "Ajout / modification / suppression de compte",
+        account_request_mailto(),
+        use_container_width=True,
+    )
+    st.caption(f"Contact : {CONTACT_EMAIL} · Ouvre un e-mail prérempli dans votre messagerie.")
 
 
 def _logout(method: str) -> None:

@@ -54,8 +54,14 @@ def geocoded_workbook_bytes(
         row_number = header_line + 1 + int(source_index)
         latitude = client["latitude"]
         longitude = client["longitude"]
-        worksheet.cell(row_number, latitude_column, None if pd.isna(latitude) else float(latitude))
-        worksheet.cell(row_number, longitude_column, None if pd.isna(longitude) else float(longitude))
+        # Worksheet.cell(..., value=None) ne remplace pas une ancienne valeur :
+        # l'affectation explicite est nécessaire pour effacer une coordonnée rejetée.
+        worksheet.cell(row_number, latitude_column).value = (
+            None if pd.isna(latitude) else float(latitude)
+        )
+        worksheet.cell(row_number, longitude_column).value = (
+            None if pd.isna(longitude) else float(longitude)
+        )
 
     output = io.BytesIO()
     workbook.save(output)

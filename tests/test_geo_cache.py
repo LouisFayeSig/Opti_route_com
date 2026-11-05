@@ -112,3 +112,79 @@ def test_azure_fallback_is_only_used_when_explicitly_provided() -> None:
     assert fallback.calls == 1
     assert fallback_errors == []
     assert with_fallback.loc[0, "latitude"] == pytest.approx(49.18)
+
+
+class FixedGeocoder:
+    provider = "Test"
+
+    def __init__(self, latitude: float, longitude: float) -> None:
+        self.calls = 0
+        self.result = GeocodeResult(latitude, longitude, "Adresse test")
+
+    def geocode(self, address: str) -> GeocodeResult:
+        self.calls += 1
+        return self.result
+
+
+def _lezan_client(latitude: float | None = None, longitude: float | None = None) -> pd.DataFrame:
+    return pd.DataFrame({
+        "client_name": ["LM Agencement"],
+        "full_address": ["1 rue du Test, 30350, Lézan, France"],
+        "postal_code": ["30350"],
+        "country": ["France"],
+        "latitude": [latitude],
+        "longitude": [longitude],
+    })
+
+
+def test_bad_workbook_and_cached_coordinates_are_replaced(tmp_path) -> None:
+    clients = _lezan_client(44, 40)
+    address = clients.loc[0, "full_address"]
+    cache = GeocodeCache(tmp_path / "geocoding.sqlite3")
+    cache.set(address, 44, 40, "Russie")
+    provider = FixedGeocoder(44.0, 4.05)
+
+    result, errors = geocode_missing_clients(clients, provider, cache)
+
+    assert not errors
+    assert provider.calls == 1
+    assert result.loc[0, "longitude"] == 4.05
+    assert cache.get(address).longitude == 4.05
+    assert clients.loc[0, "longitude"] == 40
+
+
+def test_out_of_region_result_triggers_fallback_and_only_valid_result_is_cached(tmp_path) -> None:
+    clients = _lezan_client()
+    cache = GeocodeCache(tmp_path / "geocoding.sqlite3")
+    primary = FixedGeocoder(44, 40)
+    fallback = FixedGeocoder(44, 4.05)
+
+    result, errors = geocode_missing_clients(clients, primary, cache, fallback_client=fallback)
+
+    assert not errors
+    assert primary.calls == fallback.calls == 1
+    assert result.loc[0, "longitude"] == 4.05
+
+
+def test_rejected_results_stay_ungeocoded_and_out_of_cache(tmp_path) -> None:
+    clients = _lezan_client(44, 40)
+    cache = GeocodeCache(tmp_path / "geocoding.sqlite3")
+
+    result, errors = geocode_missing_clients(
+        clients, FixedGeocoder(44, 40), cache, fallback_client=FixedGeocoder(23, -60)
+    )
+
+    assert result[["latitude", "longitude"]].isna().all(axis=None)
+    assert "Résultat rejeté" in errors[0]
+    assert cache.get(clients.loc[0, "full_address"]) is None
+
+
+def test_valid_coordinates_are_kept_without_provider_calls(tmp_path) -> None:
+    provider = FixedGeocoder(44, 40)
+    clients = _lezan_client(44, 4.05)
+
+    result, errors = geocode_missing_clients(clients, provider, GeocodeCache(tmp_path / "geo.db"))
+
+    assert not errors
+    assert provider.calls == 0
+    assert result.loc[0, "longitude"] == 4.05
