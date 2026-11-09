@@ -142,13 +142,20 @@ L'application refuse par défaut un jeton sans rôle reconnu, provenant d'un aut
 plusieurs rôles Opti Route. Chaque compte doit donc recevoir exactement un rôle.
 Les anciennes listes `ADMIN_EMAILS` ne donnent plus aucun droit en mode Entra.
 
-Après la première connexion de l'administrateur, provisionner de préférence les habilitations par
-l'import du CSV Entra décrit plus bas et dans [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
+Après la première connexion de l'administrateur, les habilitations peuvent être provisionnées avec
+le portefeuille, depuis les exports Entra intégrés au classeur ou les Object ID déjà renseignés
+dans **Utilisateurs**. Les CSV séparés restent acceptés ; voir
+[deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
 L'onglet **Administration → Habilitations** reste utile pour corriger ponctuellement un compte : il
 associe l'Object ID Entra (`oid`) de chaque ATC à son code ATC, chaque RAG à son e-mail N+1 et chaque
 DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'habilitation doivent
 correspondre ; une incohérence bloque l'accès. L'adresse e-mail sert à calculer le périmètre, mais
 l'Object ID reste la clé d'autorisation stable.
+
+Pour un RAG, l'e-mail N+1 rattache plusieurs portefeuilles et son éventuel portefeuille personnel :
+les champs Code ATC et Commercial ATC peuvent donc rester vides. Le tableau des habilitations
+affiche le nombre de portefeuilles et d'entreprises accessibles. Le choix **RAG responsable des
+portefeuilles** affiche aussi le détail des commerciaux et codes ATC concernés avant enregistrement.
 
 Pour un ATC, **Commercial existant** sélectionne un portefeuille déjà importé. **Saisie manuelle**
 permet de créer ou modifier l'habilitation avec un nouveau code ATC et un nom de commercial, sans
@@ -324,6 +331,26 @@ les Object IDs et e-mails Entra avec le portefeuille et affiche une prévisualis
 Le bouton d'enregistrement crée ou met à jour uniquement les habilitations validées. Les comptes
 sans correspondance et les UG absentes sont signalés, et aucune habilitation existante n'est
 supprimée automatiquement. Cette opération n'écrit jamais dans Microsoft Entra ID.
+
+Le même import peut désormais utiliser directement le classeur :
+
+- les quatre feuilles **ADMIN**, **ATC**, **DR** et **RAG** contiennent les exports des groupes Entra,
+  sous forme de colonnes Excel ou de lignes CSV dans une seule colonne ;
+- en l'absence de ces exports, les lignes de **Utilisateurs** ayant un **Object ID Entra** renseigné
+  fournissent l'identifiant, le rôle, le nom et l'e-mail du compte ; les autres lignes sont ignorées ;
+- **Code Region** dans **Utilisateurs** reste la source des groupes d'UG des DR.
+
+La source du classeur est sélectionnée automatiquement dans **Habilitations à l'import**. La
+prévisualisation indique les créations, mises à jour et correspondances manquantes ; les écritures
+sont faites uniquement en cliquant sur **Enregistrer ce portefeuille et appliquer … habilitation(s)**.
+Il est possible de choisir **Ne pas modifier les habilitations**. Une source invalide bloque l'import
+jusqu'à sa correction ou à ce choix explicite. Un même compte répété avec le même rôle et e-mail
+est dédupliqué ; des rôles ou e-mails contradictoires pour un Object ID sont refusés.
+
+Les feuilles Entra sont un instantané : il n'est plus nécessaire de redéposer les CSV à chaque
+import, mais elles doivent être actualisées lorsque les membres des groupes changent. Les rôles
+restent vérifiés par Entra à la connexion ; cet import ne remplace pas les exports par une
+synchronisation en direct et ne révoque pas automatiquement les habilitations absentes du fichier.
 
 La procédure Cloud Shell, les consentements Graph nécessaires, le format CSV et les contrôles de
 sécurité sont détaillés dans [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).

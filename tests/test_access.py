@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from opti_route.access import AccessDeniedError, authorize_portfolio
+from opti_route.access import AccessDeniedError, authorize_portfolio, rag_portfolio_overview
 from opti_route.auth import AuthenticatedUser
 from opti_route.storage import UserAccessProfile
 
@@ -85,6 +85,12 @@ def test_email_scopes_prevent_leaks_when_an_atc_code_is_reused() -> None:
         "Bob client",
         "RAG own client",
     ]
+    overview = rag_portfolio_overview(clients, " RAG@example.test ")
+    assert overview["Entreprises"].sum() == len(rag_portfolio.clients)
+    assert set(overview["E-mail ATC"]) == {
+        "alice@example.test", "bob@example.test", "rag@example.test",
+    }
+    assert rag_portfolio_overview(clients, "").empty
 
 
 def test_atc_name_keeps_legacy_code_scope_specific_when_email_is_missing() -> None:

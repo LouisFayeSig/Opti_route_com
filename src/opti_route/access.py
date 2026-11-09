@@ -35,6 +35,39 @@ def _normalized_text(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str).str.strip().str.casefold()
 
 
+def _rag_scope_mask(clients: pd.DataFrame, rag_email: str) -> pd.Series:
+    mask = _normalized_text(clients["rag_email"]).eq(rag_email.strip().casefold())
+    if "salesperson_email" in clients.columns:
+        mask |= _normalized_text(clients["salesperson_email"]).eq(rag_email.strip().casefold())
+    return mask
+
+
+def rag_portfolio_overview(clients: pd.DataFrame, rag_email: str) -> pd.DataFrame:
+    """Affiche les portefeuilles effectivement accessibles par le périmètre e-mail RAG."""
+    columns = ["Code ATC", "Commercial", "E-mail ATC", "Entreprises"]
+    if not rag_email.strip() or "rag_email" not in clients.columns:
+        return pd.DataFrame(columns=columns)
+    scoped = clients.loc[_rag_scope_mask(clients, rag_email)]
+    details = scoped.reindex(
+        columns=["salesperson_code", "salesperson", "salesperson_email"]
+    ).fillna("")
+    details = details.astype(str).apply(lambda column: column.str.strip())
+    details["salesperson_email"] = details["salesperson_email"].str.casefold()
+    return (
+        details.groupby(list(details.columns), sort=True)
+        .size()
+        .reset_index(name="Entreprises")
+        .rename(
+            columns={
+                "salesperson_code": "Code ATC",
+                "salesperson": "Commercial",
+                "salesperson_email": "E-mail ATC",
+            }
+        )
+        .reindex(columns=columns)
+    )
+
+
 def authorize_portfolio(
     clients: pd.DataFrame,
     user: AuthenticatedUser,
@@ -64,9 +97,7 @@ def authorize_portfolio(
         if profile.atc_email:
             if "salesperson_email" not in clients.columns:
                 raise AccessDeniedError("Le perimetre ATC par e-mail ne peut pas etre applique.")
-            mask = _normalized_text(clients["salesperson_email"]).eq(
-                profile.atc_email.casefold()
-            )
+            mask = _normalized_text(clients["salesperson_email"]).eq(profile.atc_email.casefold())
         elif "salesperson_code" in clients.columns and profile.atc_code:
             mask = _normalized_text(clients["salesperson_code"]).eq(
                 profile.atc_code.strip().casefold()
@@ -74,9 +105,7 @@ def authorize_portfolio(
             if profile.atc_name:
                 if "salesperson" not in clients.columns:
                     raise AccessDeniedError("Le nom du commercial est absent du portefeuille.")
-                mask &= _normalized_text(clients["salesperson"]).eq(
-                    profile.atc_name.casefold()
-                )
+                mask &= _normalized_text(clients["salesperson"]).eq(profile.atc_name.casefold())
             elif "salesperson" in clients.columns:
                 matching_salespeople = _normalized_text(clients.loc[mask, "salesperson"])
                 if matching_salespeople.nunique() > 1:
@@ -90,13 +119,7 @@ def authorize_portfolio(
         if profile.rag_email:
             if "rag_email" not in clients.columns:
                 raise AccessDeniedError("Le perimetre RAG par e-mail ne peut pas etre applique.")
-            mask = _normalized_text(clients["rag_email"]).eq(
-                profile.rag_email.casefold()
-            )
-            if "salesperson_email" in clients.columns:
-                mask |= _normalized_text(clients["salesperson_email"]).eq(
-                    profile.rag_email.casefold()
-                )
+            mask = _rag_scope_mask(clients, profile.rag_email)
         elif "agency" in clients.columns and profile.agencies:
             allowed_agencies = {value.strip().casefold() for value in profile.agencies}
             mask = _normalized_text(clients["agency"]).isin(allowed_agencies)

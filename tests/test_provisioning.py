@@ -7,9 +7,14 @@ from opti_route.provisioning import (
     EntraMember,
     ProvisioningError,
     build_provisioning_plan,
+    entra_export_sheets,
     merge_entra_member_exports,
     parse_dr_regions,
     parse_entra_members_csv,
+    parse_entra_members_table,
+    parse_users_entra_members,
+    parse_workbook_entra_exports,
+    users_entra_id_count,
     users_sheet_name,
 )
 
@@ -56,8 +61,7 @@ def test_automatic_provisioning_matches_atc_rag_and_dr() -> None:
 
 def test_unmatched_atc_is_not_provisioned() -> None:
     members = parse_entra_members_csv(
-        b"app_role,object_id,display_name,email\n"
-        b"atc,oid-atc,ATC,missing@example.test\n"
+        b"app_role,object_id,display_name,email\natc,oid-atc,ATC,missing@example.test\n"
     )
 
     plan = build_provisioning_plan(_clients(), members, {})
@@ -124,3 +128,155 @@ def test_native_group_exports_reject_a_member_with_two_roles() -> None:
 
 def test_users_sheet_is_detected() -> None:
     assert users_sheet_name(["Listing client", "Utilisateurs", "AA"]) == "Utilisateurs"
+
+
+def _native_columns() -> list[str]:
+    return [
+        "displayName",
+        "objectType",
+        "mail",
+        "userType",
+        "id",
+        "deviceId",
+        "userPrincipalName",
+        "isUser",
+        "isGroup",
+        "isGuest",
+    ]
+
+
+def _embedded_sheets() -> dict[str, pd.DataFrame]:
+    result = {}
+    for role in ("admin", "atc", "dr", "rag"):
+        email = f"{role}@example.test"
+        values = [
+            role.upper(),
+            "user",
+            email,
+            "Member",
+            f"oid-{role}",
+            "",
+            email,
+            "True",
+            "False",
+            "False",
+        ]
+        if role in {"dr", "rag"}:
+            result[role.upper()] = pd.DataFrame({",".join(_native_columns()): [",".join(values)]})
+        else:
+            result[role.upper()] = pd.DataFrame([values], columns=_native_columns())
+    return result
+
+
+def test_workbook_exports_accept_both_excel_columns_and_single_column_csv() -> None:
+    members = parse_workbook_entra_exports(_embedded_sheets())
+    assert len(members) == 4
+    assert {member.role for member in members} == {"admin", "atc", "dr", "rag"}
+    assert next(member for member in members if member.role == "rag").email == "rag@example.test"
+
+
+def test_incomplete_or_ambiguous_workbook_exports_are_rejected() -> None:
+    sheets = _embedded_sheets()
+    del sheets["DR"]
+    with pytest.raises(ProvisioningError, match="manquantes"):
+        parse_workbook_entra_exports(sheets)
+    with pytest.raises(ProvisioningError, match="Plusieurs feuilles"):
+        entra_export_sheets(["ATC", "D-FR-APP-OPTIROUTE-ATC"])
+
+
+@pytest.mark.parametrize("flat", [True, False])
+def test_unquoted_comma_in_a_native_display_name_does_not_shift_the_object_id(flat) -> None:
+    object_id = "b6a05ea4-1f5d-45ec-af76-38293a39709a"
+    values = [
+        "Faye",
+        " Louis",
+        "user",
+        "l.faye@example.test",
+        "Member",
+        object_id,
+        "",
+        "l.faye@example.test",
+        "True",
+        "False",
+        "False",
+    ]
+    if flat:
+        frame = pd.DataFrame({",".join(_native_columns()): [",".join(values)]})
+    else:
+        frame = pd.DataFrame([values], columns=[*_native_columns(), "Unnamed: 10"])
+    members = parse_entra_members_table(frame, default_role="admin")
+    assert members[0].principal_id == object_id
+    assert members[0].display_name == "Faye, Louis"
+    assert members[0].email == "l.faye@example.test"
+
+
+def test_csv_native_name_with_quotes_keeps_the_full_name() -> None:
+    payload = (
+        ",".join(_native_columns())
+        + '\n"Doe, Jane",user,jane@example.test,Member,oid-jane,,jane@example.test,True,False,False\n'
+    )
+    member = parse_entra_members_csv(payload.encode(), default_role="rag")[0]
+    assert member.display_name == "Doe, Jane"
+    assert member.principal_id == "oid-jane"
+
+
+def test_shifted_columns_with_an_unidentifiable_object_id_are_rejected() -> None:
+    values = [
+        "Doe",
+        "Jane",
+        "user",
+        "jane@example.test",
+        "Member",
+        "not-an-object-id",
+        "",
+        "jane@example.test",
+        "True",
+        "False",
+        "False",
+    ]
+    frame = pd.DataFrame([values], columns=[*_native_columns(), "Unnamed: 10"])
+    with pytest.raises(ProvisioningError, match="décalé"):
+        parse_entra_members_table(frame, default_role="atc")
+
+
+def test_embedded_role_cannot_conflict_with_its_sheet_role() -> None:
+    frame = pd.DataFrame({"object_id": ["oid"], "app_role": ["admin"], "email": ["x@example.test"]})
+    with pytest.raises(ProvisioningError, match="rôle différent"):
+        parse_entra_members_table(frame, default_role="atc")
+
+
+def test_users_object_ids_are_used_and_repeated_account_rows_are_deduplicated() -> None:
+    users = pd.DataFrame(
+        {
+            "Role Entra": ["D-FR-APP-OPTIROUTE-ATC"] * 3,
+            "UPN ou e-mail": ["atc@example.test", "ATC@example.test", "other@example.test"],
+            "Nom affiche": ["ATC Rennes", "ATC Saint-Brieuc", "Sans identifiant"],
+            "Object ID Entra a restituer": ["oid-atc", "oid-atc", None],
+        }
+    )
+    assert users_entra_id_count(users) == 2
+    members = parse_users_entra_members(users)
+    assert len(members) == 1
+    plan = build_provisioning_plan(_clients(), members, {})
+    assert plan.candidates[0].profile.principal_id == "oid-atc"
+    assert plan.candidates[0].profile.atc_email == "atc@example.test"
+
+
+def test_users_conflicting_identity_is_not_silently_deduplicated() -> None:
+    users = pd.DataFrame(
+        {
+            "Role Entra": ["atc", "atc"],
+            "Object ID": ["oid", "oid"],
+            "UPN ou e-mail": ["a@example.test", "b@example.test"],
+        }
+    )
+    with pytest.raises(ProvisioningError, match="contradictoires"):
+        parse_users_entra_members(users)
+    assert parse_users_entra_members(pd.DataFrame({"Object ID": [None]})) == ()
+
+
+def test_rag_own_portfolio_is_included_in_provisioning() -> None:
+    members = (EntraMember("rag", "oid-rag-own", "RAG", "atc@example.test"),)
+    plan = build_provisioning_plan(_clients(), members, {})
+    assert plan.candidates[0].profile.rag_email == "atc@example.test"
+    assert "1 portefeuille" in plan.candidates[0].scope_description

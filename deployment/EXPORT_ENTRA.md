@@ -43,6 +43,31 @@ périmètre métier interne (ATC, RAG ou DR).
 Deux modes d'export sont disponibles. L'export natif du portail est à privilégier lorsqu'aucun droit
 Microsoft Graph n'est accordé. Le script PowerShell reste disponible pour produire un fichier unique.
 
+## Un seul classeur à importer
+
+Le classeur peut regrouper **Listing client**, **Utilisateurs** et les quatre exports dans des feuilles
+nommées **ADMIN**, **ATC**, **DR** et **RAG**. Chaque export peut être réparti en colonnes ou collé comme
+CSV dans une seule colonne. Les noms natifs contenant une virgule non protégée sont reconstitués
+uniquement lorsque les colonnes utilisateur et l'Object ID permettent de vérifier le réalignement.
+Une structure ambiguë est refusée.
+
+Dans **Habilitations à l'import**, la source intégrée est détectée et proposée par défaut. Aucun CSV
+supplémentaire n'est demandé. Les groupes fournissent l'Object ID, le rôle et l'e-mail ; les clients
+fournissent le périmètre ATC/RAG et **Code Region** dans **Utilisateurs** définit les UG des DR.
+
+Si les exports ne sont pas intégrés mais que la colonne **Object ID Entra a restituer** de
+**Utilisateurs** est déjà remplie, cette feuille peut aussi être sélectionnée comme source autonome.
+Les lignes sans identifiant restent ignorées. Un compte présent sur plusieurs lignes avec le même
+Object ID, rôle et e-mail ne produit qu'une habilitation ; les incohérences sont refusées.
+
+La prévisualisation ne modifie rien. Le bouton d'enregistrement du portefeuille applique les profils
+validés avec l'import. Il reste possible de choisir explicitement **Ne pas modifier les habilitations**.
+Les anciens profils ne sont pas supprimés automatiquement.
+
+Conserver le classeur pour les imports suivants évite les dépôts CSV répétés. Il faut toutefois
+remplacer les feuilles d'export lorsque les membres changent dans Entra : elles ne sont pas une
+connexion en direct à l'annuaire. Les App Roles signés restent contrôlés à la connexion.
+
 ## Voie recommandée sans droit Graph : exports natifs du portail Entra
 
 Depuis **Applications d'entreprise > Opti Route > Utilisateurs et groupes**, ouvrir successivement

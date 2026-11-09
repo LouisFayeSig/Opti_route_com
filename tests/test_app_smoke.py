@@ -1,5 +1,7 @@
 import json
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pandas as pd
@@ -616,3 +618,95 @@ def test_existing_commercial_selection_keeps_matching_code_name_and_email(region
     assert (profile.atc_code, profile.atc_name, profile.atc_email) == (
         "20-01-001", "Sarah EDIR", "s.edir@litt.fr",
     )
+
+
+def _import_workbook(*, embedded: bool, invalid_export: bool = False) -> bytes:
+    workbook = BytesIO()
+    records = [
+        ("admin", "oid-import-admin", "Admin", "admin@example.test"),
+        ("atc", "oid-import-atc", "Sarah EDIR", "s.edir@litt.fr"),
+        ("rag", "oid-import-rag", "RAG", "c.vernay@litt.fr"),
+        ("dr", "oid-import-dr", "DR", "dr@example.test"),
+    ]
+    users = pd.DataFrame([
+        {"Role Entra": role, "Object ID Entra a restituer": oid, "Nom affiche": name,
+         "UPN ou e-mail": email, "Code Region": "31-22" if role == "dr" else ""}
+        for role, oid, name, email in records
+    ])
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        _portfolio_for_local_test_accounts().to_excel(writer, sheet_name="Listing client", index=False)
+        users.to_excel(writer, sheet_name="Utilisateurs", index=False)
+        if embedded:
+            for role, oid, name, email in records:
+                record = {"id": oid, "displayName": name, "mail": email}
+                if invalid_export and role == "atc":
+                    record["app_role"] = "admin"
+                pd.DataFrame([record]).to_excel(writer, sheet_name=role.upper(), index=False)
+    return workbook.getvalue()
+
+
+def _upload_import_workbook(monkeypatch, payload: bytes) -> None:
+    original = st.file_uploader
+    uploaded = SimpleNamespace(name="Listing_client_avec_comptes.xlsx", getvalue=lambda: payload)
+
+    def uploader(label, *args, **kwargs):
+        if label == "Importer et remplacer le portefeuille d'entreprises":
+            return uploaded
+        return original(label, *args, **kwargs)
+
+    monkeypatch.setattr(st, "file_uploader", uploader)
+
+
+@pytest.mark.parametrize("embedded", [True, False])
+def test_import_uses_embedded_exports_or_users_ids_only_when_confirmed(regional_app, monkeypatch, embedded) -> None:
+    _upload_import_workbook(monkeypatch, _import_workbook(embedded=embedded))
+    app = regional_app("test-admin")
+    source = next(item for item in app.radio if item.label == "Source des membres Entra")
+    assert source.value == (
+        "Feuilles ADMIN, ATC, DR et RAG du classeur" if embedded
+        else "Object ID renseignés dans Utilisateurs"
+    )
+    assert not app.file_uploader  # Aucun export CSV supplémentaire demandé.
+    store = AppStore(load_settings().app_storage_path)
+    assert store.load_access_profile("oid-import-atc") is None
+    button = next(item for item in app.button if item.label.startswith("Enregistrer ce portefeuille"))
+    assert "appliquer 3 habilitation(s)" in button.label
+    assert not button.disabled
+    button.click().run()
+
+    assert not app.exception
+    assert store.load_access_profile("oid-import-atc").atc_email == "s.edir@litt.fr"
+    assert store.load_access_profile("oid-import-rag").rag_email == "c.vernay@litt.fr"
+    assert store.load_access_profile("oid-import-dr").ugs == ("31", "22")
+    assert store.load_access_profile("oid-import-admin") is None
+
+
+def test_invalid_embedded_export_blocks_import_until_explicit_opt_out(regional_app, monkeypatch) -> None:
+    _upload_import_workbook(monkeypatch, _import_workbook(embedded=True, invalid_export=True))
+    app = regional_app("test-admin")
+    button = next(item for item in app.button if item.label.startswith("Enregistrer ce portefeuille"))
+    assert button.disabled
+    assert any("rôle différent" in item.value for item in app.error)
+    assert AppStore(load_settings().app_storage_path).load_access_profile("oid-import-atc") is None
+    source = next(item for item in app.radio if item.label == "Source des membres Entra")
+    source.set_value("Ne pas modifier les habilitations").run()
+    button = next(item for item in app.button if item.label.startswith("Enregistrer ce portefeuille"))
+    assert not button.disabled
+
+
+def test_admin_can_see_which_portfolios_a_rag_will_receive(regional_app) -> None:
+    app = regional_app("test-admin")
+    app.radio(key="access_role").set_value("RAG").run()
+    selector = app.selectbox(key="access_rag_scope")
+    index = next(i for i, label in enumerate(selector.options) if label.endswith(" · rag@example.test"))
+    selector.select_index(index).run()
+    assert any("2 portefeuille(s) et 2 entreprise(s)" in item.value for item in app.caption)
+    overviews = [item.value for item in app.dataframe if "Entreprises" in item.value.columns]
+    assert any(set(frame["Commercial"]) == {"Sarah EDIR", "Meline TRILLAUD"} for frame in overviews)
+    app.text_input(key="access_principal_id").input("oid-rag-summary")
+    app.text_input(key="access_display_name").input("RAG Summary")
+    app.button(key="save_access_profile").click().run()
+    assert not app.exception
+    table = next(item.value for item in app.dataframe if "Périmètre RAG" in item.value.columns)
+    row = table.loc[table["Object ID Entra"].eq("oid-rag-summary")].iloc[0]
+    assert row["Périmètre RAG"] == "2 portefeuille(s) · 2 entreprise(s)"

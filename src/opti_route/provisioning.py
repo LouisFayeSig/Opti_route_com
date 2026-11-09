@@ -7,12 +7,15 @@ administrateur explicite.
 
 from __future__ import annotations
 
+import csv
 import io
 import re
 from dataclasses import dataclass
+from uuid import UUID
 
 import pandas as pd
 
+from .access import rag_portfolio_overview
 from .data import normalize_column_name
 from .storage import UserAccessProfile
 
@@ -104,7 +107,11 @@ class ProvisioningPlan:
         rows = []
         for candidate in self.candidates:
             profile = candidate.profile
-            action = "Mettre à jour" if profile.principal_id.casefold() in existing_profile_ids else "Créer"
+            action = (
+                "Mettre à jour"
+                if profile.principal_id.casefold() in existing_profile_ids
+                else "Créer"
+            )
             rows.append(
                 {
                     "Action": action,
@@ -145,8 +152,7 @@ def _optional_column_name(frame: pd.DataFrame, aliases: tuple[str, ...]) -> str 
             (
                 column
                 for normalized_name, column in normalized.items()
-                if normalized_name.startswith(f"{alias}_")
-                or normalized_name.endswith(f"_{alias}")
+                if normalized_name.startswith(f"{alias}_") or normalized_name.endswith(f"_{alias}")
             ),
             None,
         )
@@ -160,23 +166,94 @@ def _role(value: object) -> str | None:
 
 
 def _validate_unique_entra_roles(members: tuple[EntraMember, ...]) -> tuple[EntraMember, ...]:
-    duplicate_ids = {
-        member.principal_id
-        for member in members
-        if sum(other.principal_id == member.principal_id for other in members) > 1
-    }
-    if duplicate_ids:
-        raise ProvisioningError(
-            "Un ou plusieurs comptes appartiennent à plusieurs groupes Opti Route : "
-            + ", ".join(sorted(duplicate_ids))
-        )
-    return members
+    unique: dict[str, EntraMember] = {}
+    for member in members:
+        previous = unique.get(member.principal_id)
+        if previous is not None:
+            if previous.role != member.role or previous.email != member.email:
+                raise ProvisioningError(
+                    "Un ou plusieurs comptes appartiennent à plusieurs groupes Opti Route "
+                    "ou présentent des e-mails contradictoires : " + member.principal_id
+                )
+            # Un compte peut figurer sur plusieurs lignes Utilisateurs (plusieurs portefeuilles).
+            continue
+        unique[member.principal_id] = member
+    return tuple(unique.values())
 
 
 def merge_entra_member_exports(*exports: tuple[EntraMember, ...]) -> tuple[EntraMember, ...]:
     """Réunit les exports des groupes et rejette un rôle Entra multiple."""
 
     return _validate_unique_entra_roles(tuple(member for export in exports for member in export))
+
+
+_NATIVE_ENTRA_COLUMNS = (
+    "displayname",
+    "objecttype",
+    "mail",
+    "usertype",
+    "id",
+    "deviceid",
+    "userprincipalname",
+    "isuser",
+    "isgroup",
+    "isguest",
+)
+
+
+def _entra_table_from_rows(headers: list[str], rows: list[list[object]]) -> pd.DataFrame:
+    """Réaligne uniquement le cas identifiable d'une virgule non protégée dans le nom."""
+    native = tuple(normalize_column_name(value) for value in headers[:10]) == _NATIVE_ENTRA_COLUMNS
+    if native and all(
+        not _text(value) or str(value).startswith("Unnamed:") for value in headers[10:]
+    ):
+        headers = headers[:10]
+    normalized: list[list[object]] = []
+    for row in rows:
+        if not any(_text(value) for value in row):
+            continue
+        values = list(row)
+        while len(values) > len(headers) and not _text(values[-1]):
+            values.pop()
+        if native and len(headers) == 10 and len(values) > 10:
+            name_parts = len(values) - 9
+            suffix = values[name_parts:]
+            try:
+                UUID(_text(suffix[3]))
+            except (ValueError, AttributeError) as exc:
+                raise ProvisioningError(
+                    "Export Entra décalé : l'Object ID ne peut pas être identifié."
+                ) from exc
+            if (
+                _text(suffix[0]).casefold() != "user"
+                or _text(suffix[6]).casefold() != "true"
+                or any(_text(value).casefold() not in {"true", "false"} for value in suffix[7:])
+            ):
+                raise ProvisioningError(
+                    "Export Entra décalé : les colonnes utilisateur sont incohérentes."
+                )
+            values = [", ".join(_text(value) for value in values[:name_parts]), *suffix]
+        if len(values) > len(headers):
+            raise ProvisioningError(
+                "Le nombre de colonnes d'une ligne Entra ne correspond pas aux en-têtes."
+            )
+        normalized.append([*values, *([None] * (len(headers) - len(values)))])
+    return pd.DataFrame(normalized, columns=headers)
+
+
+def _read_entra_csv(payload: str) -> pd.DataFrame:
+    header_line = next((line for line in payload.splitlines() if line.strip()), "")
+    delimiter = ";" if header_line.count(";") > header_line.count(",") else ","
+    try:
+        rows = list(
+            csv.reader(io.StringIO(payload.lstrip("\ufeff")), delimiter=delimiter, strict=True)
+        )
+    except csv.Error as exc:
+        raise ProvisioningError("Lecture de l'export Entra impossible.") from exc
+    rows = [row for row in rows if any(value.strip() for value in row)]
+    if not rows:
+        raise ProvisioningError("L'export Entra ne contient aucun utilisateur.")
+    return _entra_table_from_rows(rows[0], rows[1:])
 
 
 def parse_entra_members_csv(
@@ -191,9 +268,24 @@ def parse_entra_members_csv(
     """
 
     try:
-        frame = pd.read_csv(io.BytesIO(payload), sep=None, engine="python", dtype=str)
-    except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+        frame = _read_entra_csv(payload.decode("utf-8-sig"))
+    except UnicodeDecodeError as exc:
         raise ProvisioningError("Lecture de l'export Entra impossible.") from exc
+    return parse_entra_members_table(frame, default_role=default_role)
+
+
+def parse_entra_members_table(
+    frame: pd.DataFrame, *, default_role: str | None = None
+) -> tuple[EntraMember, ...]:
+    """Lit les colonnes d'un export ou son CSV collé dans une seule colonne Excel."""
+    frame = frame.dropna(how="all")
+    if len(frame.columns) == 1 and any(
+        separator in str(frame.columns[0]) for separator in (",", ";")
+    ):
+        payload = "\n".join([str(frame.columns[0]), *frame.iloc[:, 0].dropna().astype(str)])
+        frame = _read_entra_csv(payload)
+    else:
+        frame = _entra_table_from_rows(list(map(str, frame.columns)), frame.values.tolist())
     if frame.empty:
         raise ProvisioningError("L'export Entra ne contient aucun utilisateur.")
 
@@ -217,6 +309,11 @@ def parse_entra_members_csv(
     for _, row in frame.iterrows():
         principal_id = _text(row[id_column]).casefold()
         role = _role(row[role_column]) if role_column else _role(default_role)
+        if default_role is not None and role != _role(default_role):
+            issues.append(
+                f"le compte {principal_id} a un rôle différent de celui de sa feuille ou de son groupe"
+            )
+            continue
         email = _email(row[email_column]) if email_column else ""
         email = email or (_email(row[upn_column]) if upn_column else "")
         display_name = _text(row[display_name_column]) if display_name_column else email
@@ -241,6 +338,63 @@ def parse_entra_members_csv(
     if issues:
         raise ProvisioningError("Export Entra invalide : " + "; ".join(issues[:3]))
     return _validate_unique_entra_roles(tuple(members))
+
+
+def entra_export_sheets(sheet_names: list[str]) -> dict[str, str]:
+    """Associe les feuilles ADMIN/ATC/DR/RAG à leur rôle métier attendu."""
+    exports: dict[str, str] = {}
+    for name in sheet_names:
+        role = _role(name)
+        if role is None:
+            continue
+        if role in exports:
+            raise ProvisioningError(f"Plusieurs feuilles correspondent au groupe {role.upper()}.")
+        exports[role] = name
+    return exports
+
+
+def parse_workbook_entra_exports(
+    sheets: dict[str, pd.DataFrame],
+) -> tuple[EntraMember, ...]:
+    exports = entra_export_sheets(list(sheets))
+    missing = {"admin", "atc", "dr", "rag"} - set(exports)
+    if missing:
+        raise ProvisioningError(
+            "Feuilles d'export Entra manquantes : " + ", ".join(sorted(missing)).upper()
+        )
+    return merge_entra_member_exports(
+        *(
+            parse_entra_members_table(sheets[name], default_role=role)
+            for role, name in exports.items()
+        )
+    )
+
+
+def parse_users_entra_members(users: pd.DataFrame) -> tuple[EntraMember, ...]:
+    """Utilise les Object ID déjà renseignés dans la feuille Utilisateurs."""
+    id_column = _optional_column_name(users, _OBJECT_ID_COLUMNS)
+    if id_column is None:
+        return ()
+    identified = users.loc[users[id_column].map(_text).ne("")]
+    if identified.empty:
+        return ()
+    role_column = _column_name(identified, _ENTRA_ROLE_COLUMNS, "du rôle Entra")
+    email_column = _column_name(identified, _EMAIL_COLUMNS, "de l'e-mail utilisateur")
+    name_column = _optional_column_name(identified, _DISPLAY_NAME_COLUMNS)
+    frame = pd.DataFrame(
+        {
+            "object_id": identified[id_column],
+            "app_role": identified[role_column],
+            "email": identified[email_column],
+            "display_name": identified[name_column] if name_column else identified[email_column],
+        }
+    )
+    return parse_entra_members_table(frame)
+
+
+def users_entra_id_count(users: pd.DataFrame) -> int:
+    column = _optional_column_name(users, _OBJECT_ID_COLUMNS)
+    return int(users[column].map(_text).ne("").sum()) if column else 0
 
 
 def _split_ugs(value: object) -> tuple[str, ...]:
@@ -314,7 +468,8 @@ def build_provisioning_plan(
                 issues.append(
                     ProvisioningIssue(
                         "warning",
-                        "E-mail ATC absent du portefeuille : aucune habilitation créée.",
+                        "E-mail ATC absent du portefeuille : aucune habilitation créée "
+                        f"pour {member.display_name} ({member.email}).",
                         member.principal_id,
                     )
                 )
@@ -341,13 +496,11 @@ def build_provisioning_plan(
                 atc_email=member.email,
                 atc_name=names[0] if len(names) == 1 else None,
             ).validated()
-            candidates.append(
-                ProvisioningCandidate(profile, f"ATC · {member.email}")
-            )
+            candidates.append(ProvisioningCandidate(profile, f"ATC · {member.email}"))
             continue
 
         if member.role == "rag":
-            if not rag_emails.eq(member.email).any():
+            if not (rag_emails.eq(member.email) | atc_emails.eq(member.email)).any():
                 issues.append(
                     ProvisioningIssue(
                         "warning",
@@ -362,8 +515,13 @@ def build_provisioning_plan(
                 role="rag",
                 rag_email=member.email,
             ).validated()
+            overview = rag_portfolio_overview(clients, member.email)
             candidates.append(
-                ProvisioningCandidate(profile, f"RAG · {member.email}")
+                ProvisioningCandidate(
+                    profile,
+                    f"RAG · {member.email} · {len(overview)} portefeuille(s) · "
+                    f"{int(overview['Entreprises'].sum())} entreprise(s)",
+                )
             )
             continue
 
@@ -393,8 +551,6 @@ def build_provisioning_plan(
             role="dr",
             ugs=valid_ugs,
         ).validated()
-        candidates.append(
-            ProvisioningCandidate(profile, "DR · UG " + ", ".join(valid_ugs))
-        )
+        candidates.append(ProvisioningCandidate(profile, "DR · UG " + ", ".join(valid_ugs)))
 
     return ProvisioningPlan(tuple(candidates), tuple(issues), admin_count)

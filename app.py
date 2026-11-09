@@ -13,7 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from opti_route.access import AccessDeniedError, authorize_portfolio
+from opti_route.access import AccessDeniedError, authorize_portfolio, rag_portfolio_overview
 from opti_route.auth import (
     ROLE_ATC,
     ROLE_DR,
@@ -72,9 +72,13 @@ from opti_route.provisioning import (
     ProvisioningError,
     ProvisioningPlan,
     build_provisioning_plan,
+    entra_export_sheets,
     merge_entra_member_exports,
     parse_dr_regions,
     parse_entra_members_csv,
+    parse_users_entra_members,
+    parse_workbook_entra_exports,
+    users_entra_id_count,
     users_sheet_name,
 )
 from opti_route.storage import (
@@ -297,95 +301,96 @@ def _automatic_provisioning_panel(
     workbook_name: str,
     sheet_names: list[str],
     file_hash: str,
-) -> ProvisioningPlan | None:
+) -> tuple[ProvisioningPlan | None, bool]:
     """Prévisualise un provisionnement sans écrire avant la validation d'import."""
 
-    with st.expander("Provisionner les habilitations depuis l'export Entra", expanded=False):
+    users_sheet = users_sheet_name(sheet_names)
+    try:
+        users = (
+            read_tabular(io.BytesIO(workbook_bytes), filename=workbook_name, sheet_name=users_sheet)
+            if users_sheet else pd.DataFrame()
+        )
+        exports = entra_export_sheets(sheet_names)
+    except (ProvisioningError, ValueError) as exc:
+        st.error(f"Lecture des sources d'habilitations impossible : {exc}")
+        return None, False
+    identified_count = users_entra_id_count(users)
+    workbook_source = "Feuilles ADMIN, ATC, DR et RAG du classeur"
+    users_source = "Object ID renseignés dans Utilisateurs"
+    skip_source = "Ne pas modifier les habilitations"
+    sources = []
+    if exports:
+        sources.append(workbook_source)
+    if identified_count:
+        sources.append(users_source)
+    sources.extend([
+        "Exports natifs du portail Entra (sans script)",
+        "CSV consolidé produit par le script PowerShell",
+        skip_source,
+    ])
+    with st.expander("Habilitations à l'import", expanded=bool(exports or identified_count)):
         st.caption(
             "Optionnel. Les rôles restent contrôlés par Entra ; seules les habilitations métier "
             "ATC, RAG et DR seront créées ou mises à jour dans Opti Route."
         )
-        users_sheet = users_sheet_name(sheet_names)
-        if users_sheet is None:
-            st.info(
-                "Aucune feuille Utilisateurs détectée dans ce classeur : le provisionnement "
-                "automatique des DR n'est pas disponible."
-            )
-            return None
         export_source = st.radio(
             "Source des membres Entra",
-            options=(
-                "Exports natifs du portail Entra (sans script)",
-                "CSV consolidé produit par le script PowerShell",
-            ),
+            options=sources,
             help=(
-                "Les exports natifs sont téléchargés, groupe par groupe, depuis Opérations en bloc "
-                "> Télécharger les membres."
+                "Les sources présentes dans le classeur sont proposées automatiquement. "
+                "Les habilitations seront appliquées avec le bouton d'enregistrement du portefeuille."
             ),
             key=f"entra_members_source_{file_hash}",
         )
-        exported_members = None
-        group_exports: list[tuple[str, object]] = []
-        if export_source.startswith("Exports natifs"):
-            st.info(
-                "Téléchargez les membres des quatre groupes avec Opérations en bloc > "
-                "Télécharger les membres, puis associez chaque CSV au groupe affiché. "
-                "Aucun droit Microsoft Graph ni retraitement manuel n'est nécessaire."
-            )
-            role_groups = (
-                ("admin", "D-FR-APP-OPTIROUTE-ADMIN"),
-                ("atc", "D-FR-APP-OPTIROUTE-ATC"),
-                ("dr", "D-FR-APP-OPTIROUTE-DR"),
-                ("rag", "D-FR-APP-OPTIROUTE-RAG"),
-            )
-            for role, group_name in role_groups:
-                uploaded_group = st.file_uploader(
-                    f"Export de membres : {group_name}",
-                    type=["csv"],
-                    key=f"entra_group_export_{role}_{file_hash}",
-                )
-                if uploaded_group is not None:
-                    group_exports.append((role, uploaded_group))
-            if len(group_exports) != len(role_groups):
-                st.caption(
-                    f"{len(group_exports)}/{len(role_groups)} export(s) de groupe chargé(s)."
-                )
-                return None
-        else:
-            exported_members = st.file_uploader(
-                "Export des membres des groupes Entra (CSV)",
-                type=["csv"],
-                help=(
-                    "Fichier généré avec scripts/export_entra_group_members.ps1. "
-                    "Il contient les Object IDs Entra nécessaires à l'application."
-                ),
-                key=f"entra_members_export_{file_hash}",
-            )
-            if exported_members is None:
-                return None
+        if export_source == skip_source:
+            return None, True
         try:
-            users = read_tabular(
-                io.BytesIO(workbook_bytes),
-                filename=workbook_name,
-                sheet_name=users_sheet,
-                header_row=0,
-            )
-            if exported_members is not None:
-                members = parse_entra_members_csv(exported_members.getvalue())
-            else:
-                members = merge_entra_member_exports(
-                    *tuple(
-                        parse_entra_members_csv(uploaded_group.getvalue(), default_role=role)
-                        for role, uploaded_group in group_exports
-                    )
+            if export_source == workbook_source:
+                members = parse_workbook_entra_exports({
+                    name: read_tabular(io.BytesIO(workbook_bytes), filename=workbook_name, sheet_name=name)
+                    for name in exports.values()
+                })
+                st.info("Exports Entra du classeur détectés : aucun CSV supplémentaire à déposer.")
+            elif export_source == users_source:
+                members = parse_users_entra_members(users)
+                st.info(
+                    f"{identified_count} ligne(s) avec Object ID détectée(s). "
+                    "Les lignes sans Object ID ne seront pas provisionnées."
                 )
-            plan = build_provisioning_plan(clients, members, parse_dr_regions(users))
+            elif export_source.startswith("Exports natifs"):
+                group_exports = []
+                for role in ("admin", "atc", "dr", "rag"):
+                    uploaded_group = st.file_uploader(
+                        f"Export de membres : D-FR-APP-OPTIROUTE-{role.upper()}", type=["csv"],
+                        key=f"entra_group_export_{role}_{file_hash}",
+                    )
+                    if uploaded_group is not None:
+                        group_exports.append((role, uploaded_group))
+                if len(group_exports) != 4:
+                    st.caption(f"{len(group_exports)}/4 export(s) de groupe chargé(s).")
+                    return None, not group_exports
+                members = merge_entra_member_exports(*(
+                    parse_entra_members_csv(uploaded_group.getvalue(), default_role=role)
+                    for role, uploaded_group in group_exports
+                ))
+            else:
+                exported_members = st.file_uploader(
+                    "Export des membres des groupes Entra (CSV)", type=["csv"],
+                    key=f"entra_members_export_{file_hash}",
+                )
+                if exported_members is None:
+                    return None, True
+                members = parse_entra_members_csv(exported_members.getvalue())
+            plan = build_provisioning_plan(
+                clients, members, parse_dr_regions(users) if not users.empty else {},
+            )
             existing_ids = {
                 profile.principal_id for profile in store.list_access_profiles()
             }
         except (ProvisioningError, StorageError, ValueError) as exc:
             st.error(str(exc))
-            return None
+            st.caption("Corrigez la source ou choisissez explicitement de ne pas modifier les habilitations.")
+            return None, False
 
         st.caption(
             f"Feuille Utilisateurs : {users_sheet} · "
@@ -417,7 +422,7 @@ def _automatic_provisioning_panel(
             "L'application n'écrit jamais dans Entra ID et ne supprime aucune habilitation "
             "existante automatiquement."
         )
-        return plan
+        return plan, True
 
 
 def _admin_import_panel(
@@ -536,7 +541,7 @@ def _admin_import_panel(
         st.error(str(exc))
         return
 
-    provisioning_plan = _automatic_provisioning_panel(
+    provisioning_plan, provisioning_ready = _automatic_provisioning_panel(
         store,
         clients,
         workbook_bytes=file_bytes,
@@ -609,10 +614,12 @@ def _admin_import_panel(
         save_label,
         type="primary",
         use_container_width=True,
-        disabled=bool(missing_coordinates and geocoding_client is None),
+        disabled=not provisioning_ready or bool(missing_coordinates and geocoding_client is None),
         key=f"save_portfolio_{file_hash}_{sheet}_{header_line}",
     ):
         try:
+            if not provisioning_ready:
+                raise StorageError("Les sources d'habilitations doivent être corrigées avant l'import.")
             enriched_clients = clients
             geocode_errors: list[str] = []
             provisioned_count = 0
@@ -764,6 +771,11 @@ def _admin_access_panel(
     role_labels = {ROLE_ATC: "ATC", ROLE_RAG: "RAG", ROLE_DR: "DR"}
     profiles = store.list_access_profiles()
     if profiles:
+        rag_overviews = {
+            profile.principal_id: rag_portfolio_overview(clients, profile.rag_email)
+            for profile in profiles
+            if profile.role == ROLE_RAG and profile.rag_email and clients is not None
+        }
         profile_table = pd.DataFrame(
             [
                 {
@@ -774,6 +786,11 @@ def _admin_access_panel(
                     "E-mail ATC": profile.atc_email or "",
                     "Commercial ATC": profile.atc_name or "",
                     "E-mail RAG": profile.rag_email or "",
+                    "Périmètre RAG": (
+                        f"{len(rag_overviews[profile.principal_id])} portefeuille(s) · "
+                        f"{int(rag_overviews[profile.principal_id]['Entreprises'].sum())} entreprise(s)"
+                        if profile.principal_id in rag_overviews else ""
+                    ),
                     "UG DR": ", ".join(profile.ugs),
                     "Agences héritées": ", ".join(profile.agencies),
                     "Modifié le": profile.updated_at.replace("T", " "),
@@ -782,6 +799,11 @@ def _admin_access_panel(
             ]
         )
         st.dataframe(profile_table, hide_index=True, use_container_width=True)
+        st.caption(
+            "Pour un RAG, les colonnes Code ATC et Commercial ATC peuvent rester vides : "
+            "l'e-mail RAG ouvre les portefeuilles dont il est le N+1, ainsi que son propre "
+            "portefeuille s'il est aussi commercial."
+        )
     else:
         st.info("Aucune habilitation ATC, RAG ou DR n'est encore configurée.")
 
@@ -828,7 +850,7 @@ def _admin_access_panel(
             .dropna(subset=["rag_email"])
             .fillna("")
             .astype(str)
-            .drop_duplicates()
+            .drop_duplicates(subset=["rag_email"])
             .sort_values(["rag_name", "rag_email"], key=lambda values: values.str.casefold())
         )
         agencies = sorted(
@@ -907,15 +929,23 @@ def _admin_access_panel(
         if not rag_rows.empty:
             rag_options = rag_rows.index.tolist()
             selected_rag_index = st.selectbox(
-                "RAG et e-mail",
+                "RAG responsable des portefeuilles",
                 rag_options,
                 format_func=lambda index: (
-                    f"{rag_rows.at[index, 'rag_name']} · {rag_rows.at[index, 'rag_email']}"
+                    f"{rag_rows.at[index, 'rag_name'] or rag_rows.at[index, 'rag_email']} · "
+                    f"{rag_rows.at[index, 'rag_email']}"
                 ),
+                help="Choisissez l'e-mail N+1 du RAG : il peut donner accès à plusieurs portefeuilles ATC.",
                 key="access_rag_scope",
             )
             selected_rag_email = str(rag_rows.at[selected_rag_index, "rag_email"]).strip() or None
-            st.caption("Le RAG verra les portefeuilles associés à cet e-mail N+1.")
+            overview = rag_portfolio_overview(clients, selected_rag_email or "")
+            st.caption(
+                f"Ce RAG aura accès à {len(overview)} portefeuille(s) et "
+                f"{int(overview['Entreprises'].sum())} entreprise(s), selon son e-mail N+1 "
+                "et son éventuel portefeuille personnel."
+            )
+            st.dataframe(overview, hide_index=True, use_container_width=True)
         else:
             selected_agencies = tuple(
                 st.multiselect(
