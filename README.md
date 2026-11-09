@@ -150,6 +150,14 @@ DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'
 correspondre ; une incohérence bloque l'accès. L'adresse e-mail sert à calculer le périmètre, mais
 l'Object ID reste la clé d'autorisation stable.
 
+Pour un ATC, **Commercial existant** sélectionne un portefeuille déjà importé. **Saisie manuelle**
+permet de créer ou modifier l'habilitation avec un nouveau code ATC et un nom de commercial, sans
+être limité à cette liste. Ces deux champs sont obligatoires ; l'e-mail est facultatif et, s'il est
+renseigné, devient le critère prioritaire de rattachement des clients. La saisie manuelle est aussi
+disponible sans portefeuille importé. Elle prépare l'accès : les clients doivent ensuite être
+importés avec le code et le nom correspondants, ou avec l'e-mail renseigné. Elle ne modifie pas
+automatiquement l'affectation des clients existants et ne crée pas de compte dans Entra.
+
 Le fichier `.streamlit/secrets.toml` est ignoré par Git. Seul le fichier d'exemple sans secret est
 versionné. En production, placer ces valeurs dans le gestionnaire de secrets de l'hébergeur.
 Streamlit active automatiquement ses protections CORS et XSRF lorsque cette configuration OIDC est

@@ -850,9 +850,41 @@ def _admin_access_panel(
     selected_rag_email: str | None = None
     selected_agencies: tuple[str, ...] = ()
     selected_ugs: tuple[str, ...] = ()
+    manual_atc_scope = False
     if role_label == "ATC":
         atc_options = atc_rows.index.tolist()
-        if atc_options:
+        atc_scope_mode = st.radio(
+            "Périmètre ATC",
+            ["Commercial existant", "Saisie manuelle"],
+            index=0 if atc_options else 1,
+            key="access_atc_mode",
+        )
+        manual_atc_scope = atc_scope_mode == "Saisie manuelle"
+        if manual_atc_scope:
+            selected_atc_code = st.text_input(
+                "Code ATC",
+                key="access_atc_code",
+                placeholder="10-03-82",
+                help="Référence complète du portefeuille, telle qu'elle figure dans le fichier clients.",
+            ).strip() or None
+            selected_atc_name = st.text_input(
+                "Nom du commercial",
+                key="access_atc_name",
+                placeholder="Prénom NOM",
+                help="Nom du commercial, tel qu'il figure dans le fichier clients.",
+            ).strip() or None
+            selected_atc_email = st.text_input(
+                "E-mail du commercial (facultatif)",
+                key="access_atc_email",
+                placeholder="prenom.nom@sigplc.fr",
+                help="S'il est renseigné, les clients sont rattachés par cet e-mail en priorité.",
+            ).strip() or None
+            st.caption(
+                "Le code ATC et le nom du commercial sont obligatoires. Vous pouvez préparer "
+                "cette habilitation avant l'import du commercial : ses clients seront accessibles "
+                "une fois le portefeuille mis à jour."
+            )
+        elif atc_options:
             selected_atc_index = st.selectbox(
                 "Code ATC et commercial",
                 atc_options,
@@ -870,7 +902,7 @@ def _admin_access_panel(
                 atc_rows.at[selected_atc_index, "salesperson"]
             ).strip() or None
         else:
-            st.warning("Importez d'abord un portefeuille contenant des codes ATC.")
+            st.info("Aucun commercial disponible. Choisissez la saisie manuelle pour créer l'habilitation.")
     elif role_label == "RAG":
         if not rag_rows.empty:
             rag_options = rag_rows.index.tolist()
@@ -904,10 +936,16 @@ def _admin_access_panel(
     if st.button(
         "Enregistrer l'habilitation",
         type="primary",
-        disabled=not principal_id.strip(),
+        disabled=(
+            not principal_id.strip()
+            or (role_label == "ATC" and not (selected_atc_code or selected_atc_email))
+            or (manual_atc_scope and not (selected_atc_code and selected_atc_name))
+        ),
         key="save_access_profile",
     ):
         try:
+            if manual_atc_scope and not (selected_atc_code and selected_atc_name):
+                raise StorageError("Le code ATC et le nom du commercial sont obligatoires.")
             store.save_access_profile(
                 UserAccessProfile(
                     principal_id=principal_id,

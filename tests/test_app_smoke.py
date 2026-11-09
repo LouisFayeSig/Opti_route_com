@@ -7,6 +7,9 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from opti_route.access import AccessDeniedError, authorize_portfolio
+from opti_route.auth import AuthenticatedUser
+from opti_route.config import load_settings
 from opti_route.portfolio_view import (
     SCOPE_AGENCY,
     SCOPE_ALL,
@@ -409,6 +412,17 @@ def test_admin_account_can_access_portfolio_import(monkeypatch) -> None:
         assert not app.exception
         assert any("Administrateur" in caption.value for caption in app.caption)
         assert len(app.file_uploader) == 1
+        assert app.radio(key="access_atc_mode").value == "Saisie manuelle"
+        app.text_input(key="access_principal_id").input("oid-before-import")
+        app.text_input(key="access_display_name").input("Nouveau collaborateur")
+        app.text_input(key="access_atc_code").input("10-03-99")
+        app.text_input(key="access_atc_name").input("Nouveau commercial")
+        app.button(key="save_access_profile").click().run()
+        assert not app.exception
+        profile = AppStore(storage_path).load_access_profile("oid-before-import")
+        assert profile is not None
+        assert profile.atc_code == "10-03-99"
+        assert profile.atc_name == "Nouveau commercial"
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
@@ -538,3 +552,67 @@ def test_atc_only_gets_its_own_portfolio_without_extra_scope_controls(regional_a
     app = regional_app("test-atc")
     assert all(item.label != "Périmètre du calque" for item in app.radio)
     assert _map_labels(app) == {"Sarah client"}
+
+
+def test_admin_can_prepare_and_update_an_atc_not_yet_in_the_portfolio(regional_app) -> None:
+    app = regional_app("test-admin")
+    app.radio(key="access_atc_mode").set_value("Saisie manuelle").run()
+    app.text_input(key="access_principal_id").input("oid-new-atc")
+    app.text_input(key="access_display_name").input("Nouveau collaborateur")
+    app.text_input(key="access_atc_code").input(" 99-01-004 ")
+    app.run()
+    assert app.button(key="save_access_profile").disabled
+
+    app.text_input(key="access_atc_name").input(" Nouveau commercial ").run()
+    assert not app.button(key="save_access_profile").disabled
+    app.button(key="save_access_profile").click().run()
+    assert not app.exception
+    store = AppStore(load_settings().app_storage_path)
+    profile = store.load_access_profile("oid-new-atc")
+    assert profile is not None
+    assert profile.atc_code == "99-01-004"
+    assert profile.atc_name == "Nouveau commercial"
+    assert profile.atc_email is None
+
+    clients, _ = store.load_clients()
+    user = AuthenticatedUser("Nouveau collaborateur", "entra", "atc", "oid-new-atc")
+    with pytest.raises(AccessDeniedError, match="Aucun client"):
+        authorize_portfolio(clients, user, profile)
+
+    new_client = clients.iloc[:1].copy()
+    new_client["client_id"] = "NEW-CLIENT"
+    new_client["salesperson_code"] = "99-01-004"
+    new_client["salesperson"] = "Nouveau commercial"
+    new_client["salesperson_email"] = "new@example.test"
+    updated_clients = pd.concat([clients, new_client], ignore_index=True)
+    authorized = authorize_portfolio(updated_clients, user, profile)
+    assert authorized.clients["client_id"].tolist() == ["NEW-CLIENT"]
+
+    app.text_input(key="access_atc_code").input("99-01-005")
+    app.text_input(key="access_atc_name").input("Autre commercial")
+    app.text_input(key="access_atc_email").input("OTHER@example.test")
+    app.button(key="save_access_profile").click().run()
+    assert not app.exception
+    updated = store.load_access_profile("oid-new-atc")
+    assert (updated.atc_code, updated.atc_name, updated.atc_email) == (
+        "99-01-005", "Autre commercial", "other@example.test",
+    )
+
+
+def test_existing_commercial_selection_keeps_matching_code_name_and_email(regional_app) -> None:
+    app = regional_app("test-admin")
+    assert app.radio(key="access_atc_mode").value == "Commercial existant"
+    selector = app.selectbox(key="access_atc_scope")
+    option_index = next(
+        index for index, label in enumerate(selector.options) if "Sarah EDIR" in label
+    )
+    selector.select_index(option_index).run()
+    app.text_input(key="access_principal_id").input("oid-existing-atc")
+    app.text_input(key="access_display_name").input("Sarah")
+    app.button(key="save_access_profile").click().run()
+
+    assert not app.exception
+    profile = AppStore(load_settings().app_storage_path).load_access_profile("oid-existing-atc")
+    assert (profile.atc_code, profile.atc_name, profile.atc_email) == (
+        "20-01-001", "Sarah EDIR", "s.edir@litt.fr",
+    )
