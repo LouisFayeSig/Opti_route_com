@@ -109,6 +109,27 @@ def test_portfolio_filters_separate_people_with_the_same_atc_code() -> None:
     assert keys.iloc[2] == "code:02|name:chloé"
 
 
+def test_two_portfolios_for_the_same_login_keep_distinct_selection_keys() -> None:
+    clients = _clients()
+    clients.loc[:1, "salesperson_email"] = "same@example.test"
+    clients.loc[1, "salesperson_code"] = "22-02-22"
+    keys = salesperson_keys(clients)
+    assert keys.iloc[0] != keys.iloc[1]
+    assert keys.iloc[0].startswith("same@example.test|")
+    selected = filter_map_clients(
+        clients,
+        role="atc",
+        scope=SCOPE_COMMERCIAL,
+        active_salesperson=keys.iloc[1],
+    )
+    assert selected["client_id"].tolist() == ["B"]
+
+
+def test_a_single_portfolio_with_many_clients_keeps_its_email_key() -> None:
+    clients = pd.concat([_clients().iloc[:1]] * 3, ignore_index=True)
+    assert salesperson_keys(clients).tolist() == ["alice@example.test"] * 3
+
+
 def test_the_commercial_scope_follows_the_selected_commercial() -> None:
     result = filter_map_clients(
         _clients(),

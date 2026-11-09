@@ -78,6 +78,7 @@ from opti_route.provisioning import (
     parse_entra_members_csv,
     parse_users_entra_members,
     parse_workbook_entra_exports,
+    reconcile_atc_portfolios,
     users_entra_id_count,
     users_sheet_name,
 )
@@ -301,7 +302,7 @@ def _automatic_provisioning_panel(
     workbook_name: str,
     sheet_names: list[str],
     file_hash: str,
-) -> tuple[ProvisioningPlan | None, bool]:
+) -> tuple[pd.DataFrame, ProvisioningPlan | None, bool]:
     """Prévisualise un provisionnement sans écrire avant la validation d'import."""
 
     users_sheet = users_sheet_name(sheet_names)
@@ -313,7 +314,7 @@ def _automatic_provisioning_panel(
         exports = entra_export_sheets(sheet_names)
     except (ProvisioningError, ValueError) as exc:
         st.error(f"Lecture des sources d'habilitations impossible : {exc}")
-        return None, False
+        return clients, None, False
     identified_count = users_entra_id_count(users)
     workbook_source = "Feuilles ADMIN, ATC, DR et RAG du classeur"
     users_source = "Object ID renseignés dans Utilisateurs"
@@ -343,7 +344,7 @@ def _automatic_provisioning_panel(
             key=f"entra_members_source_{file_hash}",
         )
         if export_source == skip_source:
-            return None, True
+            return clients, None, True
         try:
             if export_source == workbook_source:
                 members = parse_workbook_entra_exports({
@@ -368,7 +369,7 @@ def _automatic_provisioning_panel(
                         group_exports.append((role, uploaded_group))
                 if len(group_exports) != 4:
                     st.caption(f"{len(group_exports)}/4 export(s) de groupe chargé(s).")
-                    return None, not group_exports
+                    return clients, None, not group_exports
                 members = merge_entra_member_exports(*(
                     parse_entra_members_csv(uploaded_group.getvalue(), default_role=role)
                     for role, uploaded_group in group_exports
@@ -379,8 +380,15 @@ def _automatic_provisioning_panel(
                     key=f"entra_members_export_{file_hash}",
                 )
                 if exported_members is None:
-                    return None, True
+                    return clients, None, True
                 members = parse_entra_members_csv(exported_members.getvalue())
+            clients, reconciliations = reconcile_atc_portfolios(clients, users, members)
+            if not reconciliations.empty:
+                st.info(
+                    f"{len(reconciliations)} portefeuille(s) seront rattachés aux e-mails Entra "
+                    "et codes ATC renseignés dans Utilisateurs."
+                )
+                st.dataframe(reconciliations, hide_index=True, use_container_width=True)
             plan = build_provisioning_plan(
                 clients, members, parse_dr_regions(users) if not users.empty else {},
             )
@@ -390,7 +398,7 @@ def _automatic_provisioning_panel(
         except (ProvisioningError, StorageError, ValueError) as exc:
             st.error(str(exc))
             st.caption("Corrigez la source ou choisissez explicitement de ne pas modifier les habilitations.")
-            return None, False
+            return clients, None, False
 
         st.caption(
             f"Feuille Utilisateurs : {users_sheet} · "
@@ -422,7 +430,7 @@ def _automatic_provisioning_panel(
             "L'application n'écrit jamais dans Entra ID et ne supprime aucune habilitation "
             "existante automatiquement."
         )
-        return plan, True
+        return clients, plan, True
 
 
 def _admin_import_panel(
@@ -541,7 +549,7 @@ def _admin_import_panel(
         st.error(str(exc))
         return
 
-    provisioning_plan, provisioning_ready = _automatic_provisioning_panel(
+    clients, provisioning_plan, provisioning_ready = _automatic_provisioning_panel(
         store,
         clients,
         workbook_bytes=file_bytes,
@@ -1519,38 +1527,16 @@ with controls_column:
             "Commercial",
             salesperson_keys,
             format_func=lambda key: salesperson_labels.get(key, key),
-            disabled=authenticated_user.is_atc,
+            disabled=authenticated_user.is_atc and len(salesperson_keys) == 1,
             help=(
-                "Votre portefeuille est imposé par votre habilitation."
+                "Choisissez parmi vos portefeuilles autorisés."
                 if authenticated_user.is_atc
                 else "Vous pouvez préparer une tournée pour un commercial de votre périmètre."
             ),
         )
-        active_salesperson = salesperson_rows.loc[
-            salesperson_rows["salesperson_key"].eq(active_salesperson_key)
-        ].iloc[0]
-        active_salesperson_email = str(active_salesperson["salesperson_email"]).strip()
-        if active_salesperson_email:
-            assigned_clients = scoped_clients[
-                scoped_clients["salesperson_email"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.casefold()
-                .eq(active_salesperson_email)
-            ].copy()
-        else:
-            assigned_clients = scoped_clients[
-                scoped_clients["salesperson_code"].astype(str).eq(
-                    str(active_salesperson["salesperson_code"])
-                )
-                & scoped_clients["salesperson"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.casefold()
-                .eq(str(active_salesperson["salesperson"]).strip().casefold())
-            ].copy()
+        assigned_clients = scoped_clients[
+            portfolio_salesperson_keys(scoped_clients).eq(active_salesperson_key)
+        ].copy()
         st.caption(f"{len(assigned_clients)} entreprises dans ce portefeuille")
 
         selection_identifier = hashlib.sha1(

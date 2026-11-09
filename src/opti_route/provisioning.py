@@ -397,6 +397,85 @@ def users_entra_id_count(users: pd.DataFrame) -> int:
     return int(users[column].map(_text).ne("").sum()) if column else 0
 
 
+def reconcile_atc_portfolios(
+    clients: pd.DataFrame, users: pd.DataFrame, members: tuple[EntraMember, ...]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Rattache les alias de portefeuille aux identités explicites de Utilisateurs/Entra.
+
+    Le nom doit correspondre exactement (hors casse/espaces), avec le code ATC
+    renseigné ou encore absent du portefeuille. Aucun rapprochement approximatif.
+    """
+    result = clients.copy()
+    columns = [
+        "Commercial",
+        "Code ATC",
+        "Ancien e-mail portefeuille",
+        "E-mail de connexion",
+        "Clients",
+    ]
+    report: list[dict[str, object]] = []
+    id_column = _optional_column_name(users, _OBJECT_ID_COLUMNS)
+    code_column = _optional_column_name(users, ("code_atc", "atc_code", "code_commercial"))
+    name_column = _optional_column_name(users, _DISPLAY_NAME_COLUMNS)
+    if id_column is None or code_column is None or name_column is None:
+        return result, pd.DataFrame(columns=columns)
+    role_column = _column_name(users, _ENTRA_ROLE_COLUMNS, "du rôle Entra")
+    email_column = _column_name(users, _EMAIL_COLUMNS, "de l'e-mail utilisateur")
+    by_id = {member.principal_id: member for member in members}
+    names = clients["salesperson"].map(_text).str.replace(r"\s+", " ", regex=True).str.casefold()
+    codes = clients["salesperson_code"].map(_text).str.casefold()
+    assignments: dict[object, tuple[str, str, str]] = {}
+    for _, row in users.iterrows():
+        member = by_id.get(_text(row[id_column]).casefold())
+        if member is None or member.role != "atc" or _role(row[role_column]) != "atc":
+            continue
+        if _email(row[email_column]) != member.email:
+            raise ProvisioningError(
+                f"L'e-mail de {member.display_name} diffère entre Utilisateurs et l'export Entra."
+            )
+        code = _text(row[code_column])
+        name = " ".join(_text(row[name_column]).split()).casefold()
+        if not code or not name:
+            continue
+        # Le nom sert actuellement de code de repli lorsqu'une cellule `code` est vide.
+        mask = names.eq(name) & (codes.eq(code.casefold()) | codes.eq(names) | codes.eq(""))
+        if not mask.any():
+            continue
+        identity = (member.principal_id, member.email, code.casefold())
+        for index in clients.index[mask]:
+            if index in assignments and assignments[index] != identity:
+                raise ProvisioningError(
+                    f"Plusieurs identités Entra revendiquent le portefeuille {_text(row[name_column])}."
+                )
+            assignments[index] = identity
+        changed = mask & (
+            result["salesperson_email"].map(_email).ne(member.email)
+            | result["salesperson_code"].map(_text).str.casefold().ne(code.casefold())
+        )
+        if not changed.any():
+            continue
+        old_emails = sorted(set(clients.loc[mask, "salesperson_email"].map(_email)) - {""})
+        result.loc[mask, "salesperson_email"] = member.email
+        result.loc[mask, "salesperson_code"] = code
+        parts = re.fullmatch(r"(\d+)-(\d+)-\d+", code)
+        if parts:
+            for column, value in (("agency", f"{parts[1]}-{parts[2]}"), ("ug", parts[1])):
+                if column not in result.columns:
+                    result[column] = pd.NA
+                missing = result[column].map(_text).eq("")
+                result.loc[mask & missing, column] = value
+        report.append(
+            {
+                "Commercial": _text(row[name_column]),
+                "Code ATC": code,
+                "Ancien e-mail portefeuille": ", ".join(old_emails),
+                "E-mail de connexion": member.email,
+                "Clients": int(mask.sum()),
+            }
+        )
+    return result, pd.DataFrame(report, columns=columns)
+
+
 def _split_ugs(value: object) -> tuple[str, ...]:
     raw = _text(value)
     if not raw:
@@ -496,7 +575,12 @@ def build_provisioning_plan(
                 atc_email=member.email,
                 atc_name=names[0] if len(names) == 1 else None,
             ).validated()
-            candidates.append(ProvisioningCandidate(profile, f"ATC · {member.email}"))
+            candidates.append(
+                ProvisioningCandidate(
+                    profile,
+                    f"ATC · {member.email} · {len(codes)} portefeuille(s) · {len(matched)} entreprise(s)",
+                )
+            )
             continue
 
         if member.role == "rag":

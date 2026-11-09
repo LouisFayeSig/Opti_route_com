@@ -14,6 +14,7 @@ from opti_route.provisioning import (
     parse_entra_members_table,
     parse_users_entra_members,
     parse_workbook_entra_exports,
+    reconcile_atc_portfolios,
     users_entra_id_count,
     users_sheet_name,
 )
@@ -280,3 +281,84 @@ def test_rag_own_portfolio_is_included_in_provisioning() -> None:
     plan = build_provisioning_plan(_clients(), members, {})
     assert plan.candidates[0].profile.rag_email == "atc@example.test"
     assert "1 portefeuille" in plan.candidates[0].scope_description
+
+
+def test_user_identity_can_link_two_atc_portfolios_with_different_email_aliases() -> None:
+    clients = pd.DataFrame(
+        {
+            "salesperson": ["Alex Rennes", "Alex Saint-Brieuc", "Other ATC"],
+            "salesperson_code": ["Alex Rennes", "Alex Saint-Brieuc", "40-01-01"],
+            "salesperson_email": [
+                "rennes@example.test",
+                "stbrieuc@example.test",
+                "other@example.test",
+            ],
+            "rag_email": ["rag@example.test"] * 3,
+            "ug": ["22", "22", "40"],
+        }
+    )
+    users = pd.DataFrame(
+        {
+            "Object ID": ["oid-alex", "oid-alex"],
+            "Role Entra": ["atc", "atc"],
+            "Nom affiche": ["Alex Rennes", "Alex Saint-Brieuc"],
+            "UPN ou e-mail": ["alex@example.test"] * 2,
+            "Code ATC": ["22-04-35", "22-02-22"],
+        }
+    )
+    members = (EntraMember("atc", "oid-alex", "Alex", "alex@example.test"),)
+    reconciled, report = reconcile_atc_portfolios(clients, users, members)
+    assert len(report) == 2
+    assert reconciled["salesperson_code"].tolist() == ["22-04-35", "22-02-22", "40-01-01"]
+    assert reconciled["salesperson_email"].tolist() == [
+        "alex@example.test",
+        "alex@example.test",
+        "other@example.test",
+    ]
+    assert clients.iloc[0]["salesperson_email"] == "rennes@example.test"
+    plan = build_provisioning_plan(reconciled, members, {})
+    assert not plan.issues
+    assert len(plan.candidates) == 1
+    assert plan.candidates[0].profile.atc_email == "alex@example.test"
+    assert "2 portefeuille(s)" in plan.candidates[0].scope_description
+
+
+def test_identity_reconciliation_requires_an_entra_match_and_an_unambiguous_portfolio() -> None:
+    clients = _clients()
+    users = pd.DataFrame(
+        {
+            "Object ID": ["oid-alex"],
+            "Role Entra": ["atc"],
+            "Nom affiche": ["Victorien Prouteau"],
+            "UPN ou e-mail": ["new@example.test"],
+            "Code ATC": ["different-code"],
+        }
+    )
+    members = (EntraMember("atc", "oid-alex", "Alex", "new@example.test"),)
+    reconciled, report = reconcile_atc_portfolios(clients, users, members)
+    assert report.empty  # Un code existant différent ne peut pas être réattribué par le seul nom.
+    assert reconciled["salesperson_email"].tolist() == clients["salesperson_email"].tolist()
+    reconciled, report = reconcile_atc_portfolios(clients, users, ())
+    assert report.empty
+    users.loc[0, "UPN ou e-mail"] = "wrong@example.test"
+    with pytest.raises(ProvisioningError, match="diffère"):
+        reconcile_atc_portfolios(clients, users, members)
+
+
+def test_two_identities_cannot_reclaim_the_same_portfolio() -> None:
+    clients = _clients()
+    users = pd.DataFrame(
+        {
+            "Object ID": ["oid-a", "oid-b"],
+            "Role Entra": ["atc", "atc"],
+            "Nom affiche": ["Victorien Prouteau"] * 2,
+            "Code ATC": ["20-01-47"] * 2,
+            "UPN ou e-mail": ["a@example.test", "b@example.test"],
+        }
+    )
+    members = (
+        EntraMember("atc", "oid-a", "A", "a@example.test"),
+        EntraMember("atc", "oid-b", "B", "b@example.test"),
+    )
+    with pytest.raises(ProvisioningError, match="Plusieurs identités"):
+        reconcile_atc_portfolios(clients, users, members)

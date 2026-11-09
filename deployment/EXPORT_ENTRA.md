@@ -60,6 +60,13 @@ Si les exports ne sont pas intégrés mais que la colonne **Object ID Entra a re
 Les lignes sans identifiant restent ignorées. Un compte présent sur plusieurs lignes avec le même
 Object ID, rôle et e-mail ne produit qu'une habilitation ; les incohérences sont refusées.
 
+Pour un ATC possédant plusieurs portefeuilles, conserver une ligne **Utilisateurs** par portefeuille
+avec le même Object ID et l'e-mail Entra commun, mais les noms et codes ATC propres à chaque
+portefeuille. Le rapprochement exact permet de remplacer leurs anciens alias e-mail et de compléter
+les codes manquants. L'aperçu montre ces corrections avant l'import. Une ligne ne sera pas
+réaffectée par le seul nom si son code ATC existant est différent. L'application propose ensuite
+les portefeuilles séparément au compte ATC connecté.
+
 La prévisualisation ne modifie rien. Le bouton d'enregistrement du portefeuille applique les profils
 validés avec l'import. Il reste possible de choisir explicitement **Ne pas modifier les habilitations**.
 Les anciens profils ne sont pas supprimés automatiquement.

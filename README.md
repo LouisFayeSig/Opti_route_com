@@ -347,6 +347,17 @@ Il est possible de choisir **Ne pas modifier les habilitations**. Une source inv
 jusqu'à sa correction ou à ce choix explicite. Un même compte répété avec le même rôle et e-mail
 est dédupliqué ; des rôles ou e-mails contradictoires pour un Object ID sont refusés.
 
+Si un commercial utilise des alias différents selon ses portefeuilles, les lignes **Utilisateurs**
+peuvent rattacher ces portefeuilles à son e-mail Entra commun. L'Object ID et l'e-mail doivent
+correspondre à la source Entra choisie ; le nom du commercial doit correspondre exactement et le
+code ATC doit être identique ou encore absent du portefeuille. L'aperçu détaille les e-mails et
+codes qui seront corrigés lors de l'enregistrement. Une correspondance ambiguë est refusée.
+
+Un compte ATC peut ainsi accéder à plusieurs portefeuilles, sans créer plusieurs habilitations.
+Lorsque plusieurs portefeuilles partagent son e-mail, leurs codes et commerciaux restent distincts
+dans le choix **Commercial** : l'utilisateur ATC peut sélectionner celui à préparer. Un compte
+n'ayant qu'un portefeuille conserve ce choix imposé.
+
 Les feuilles Entra sont un instantané : il n'est plus nécessaire de redéposer les CSV à chaque
 import, mais elles doivent être actualisées lorsque les membres des groupes changent. Les rôles
 restent vérifiés par Entra à la connexion ; cet import ne remplace pas les exports par une
@@ -375,7 +386,7 @@ Le **Périmètre du calque** propose des vues adaptées au rôle connecté :
 
 | Rôle | Vues disponibles | Vue proposée à l'activation du calque |
 | --- | --- | --- |
-| ATC | Son portefeuille uniquement | Son portefeuille |
+| ATC | Ses portefeuilles autorisés, au choix dans Commercial | Le portefeuille sélectionné |
 | RAG | Commercial sélectionné, un ou plusieurs portefeuilles, agences, tout son périmètre | Tous ses portefeuilles sélectionnés |
 | DR | Commercial sélectionné, portefeuilles, agences, sa région commerciale, tout son périmètre | Sa région commerciale |
 | ADMIN | Commercial sélectionné, portefeuilles, agences, régions commerciales, tout le portefeuille | Toutes les régions configurées ; sinon tout le portefeuille |

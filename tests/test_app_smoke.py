@@ -710,3 +710,26 @@ def test_admin_can_see_which_portfolios_a_rag_will_receive(regional_app) -> None
     table = next(item.value for item in app.dataframe if "Périmètre RAG" in item.value.columns)
     row = table.loc[table["Object ID Entra"].eq("oid-rag-summary")].iloc[0]
     assert row["Périmètre RAG"] == "2 portefeuille(s) · 2 entreprise(s)"
+
+
+def test_atc_with_two_portfolios_can_choose_between_them(regional_app, monkeypatch) -> None:
+    store = AppStore(load_settings().app_storage_path)
+    clients, _ = store.load_clients()
+    clients.loc[:1, "salesperson_email"] = "multi@example.test"
+    store.save_clients(clients, source_name="multi.xlsx", imported_by="Test")
+    store.save_access_profile(UserAccessProfile(
+        "local:test-multi", "Multiple portfolios", "atc", atc_email="multi@example.test",
+    ), updated_by="Test")
+    monkeypatch.setenv("AUTH_USERNAME", "test-multi")
+    monkeypatch.setenv("AUTH_PASSWORD", "test-secret")
+    app = regional_app("test-multi")
+    selector = next(item for item in app.selectbox if item.label == "Commercial")
+    assert not selector.disabled
+    assert len(selector.options) == 2
+    assert all("Aurelie" not in label for label in selector.options)
+    selector.select_index(0).run()
+    first = _map_labels(app)
+    next(item for item in app.selectbox if item.label == "Commercial").select_index(1).run()
+    second = _map_labels(app)
+    assert first != second
+    assert first | second == {"Sarah client", "Meline client"}

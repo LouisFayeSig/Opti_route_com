@@ -30,7 +30,14 @@ def salesperson_keys(clients: pd.DataFrame) -> pd.Series:
         + "|name:"
         + _text_column(clients, "salesperson").str.casefold()
     )
-    return email.where(email.ne(""), fallback)
+    multiple = (
+        pd.DataFrame({"email": email, "portfolio": fallback})
+        .groupby("email")["portfolio"]
+        .transform("nunique")
+        .gt(1)
+    )
+    keys = email.where(~multiple, email + "|" + fallback)
+    return keys.where(email.ne(""), fallback)
 
 
 @dataclass(frozen=True)
