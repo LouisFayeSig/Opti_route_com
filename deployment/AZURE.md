@@ -328,7 +328,8 @@ secrets, des jetons ou du CSV Entra.
 
 ### Exploitation et retour arrière
 
-Chaque publication GitHub produit une image `vX.Y.Z` et une image `sha-<commit>`. Pour revenir en
+Chaque publication GitHub produit une image avec deux tags, `vX.Y.Z` et `sha-<commit>`,
+qui désignent le même manifeste et ne doublent pas le stockage. Pour revenir en
 arrière, sélectionner une image de version connue dans **Conteneurs**, enregistrer une nouvelle
 révision et confirmer sa sonde de santé. Ne jamais retagger une ancienne image avec le même tag de
 version : un tag doit rester immuable. Les données Blob ne sont pas automatiquement rétablies lors
@@ -390,6 +391,66 @@ Les trois secrets GitHub ne sont pas des mots de passe Azure : `AZURE_CLIENT_ID`
 `id-gh-optiroute-deploy`, `AZURE_TENANT_ID` est l'ID du locataire et `AZURE_SUBSCRIPTION_ID` est l'ID
 de l'abonnement. L'absence de `AZURE_CLIENT_SECRET` est volontaire : OIDC évite une clé Azure durable
 dans GitHub. Les secrets de runtime (OIDC Streamlit, cookie, Maps) ne passent jamais par ce workflow.
+
+### Nettoyage hebdomadaire dans Azure Container Registry
+
+Le nettoyage reste dans la tâche ACR `nettoyage-opti-route`. GitHub construit et déploie les images
+avec ses droits `AcrPush` existants ; aucune suppression n'est effectuée depuis GitHub Actions.
+
+La règle simple retient les quatre tags les plus récents parmi les candidats à la purge et les
+tags de moins de sept jours. Le workflow publie normalement deux tags par image (`vX.Y.Z` et
+`sha-<commit>`) : quatre tags représentent alors deux images. Ce n'est pas une sélection stricte
+de deux digests : plusieurs tags peuvent désigner le même digest, et le délai de sept jours ainsi
+que les verrous existants peuvent conserver davantage d'images. Le paramètre `--keep` s'applique
+également aux manifestes sans tag lorsque `--untagged` est utilisé.
+
+**La tâche ne consulte pas Container Apps.** Une version ancienne remise en production ou une
+version dépassée par plusieurs builds non déployés peut être supprimée. Cette politique privilégie
+la simplicité et la reconstruction depuis un ancien commit Git en cas de besoin. Si une ancienne
+version doit rester disponible durablement, la protéger explicitement de la suppression.
+Une suppression d'image peut empêcher un redémarrage ou la création de nouvelles répliques de la
+révision concernée ; le code source Git permet de reconstruire une image, pas de restaurer à
+l'identique une image Docker supprimée.
+
+Depuis Cloud Shell Bash, préparer la commande et vérifier la liste en simulation :
+
+```bash
+PURGE_CMD="mcr.microsoft.com/acr/acr-cli:0.19 purge --registry croptiroute.azurecr.io --filter '^opti-route$:.*' --ago 7d --keep 4 --untagged"
+
+az acr run --registry croptiroute --cmd "$PURGE_CMD --dry-run" /dev/null
+```
+
+Mettre à jour la tâche existante ; sa planification du dimanche à 03 h UTC est conservée :
+
+```bash
+az acr task update \
+  --registry croptiroute \
+  --name nettoyage-opti-route \
+  --cmd "$PURGE_CMD" \
+  --status Enabled
+```
+
+Si la tâche a été supprimée, la recréer à la place :
+
+```bash
+az acr task create \
+  --registry croptiroute \
+  --name nettoyage-opti-route \
+  --cmd "$PURGE_CMD" \
+  --schedule "0 3 * * 0" \
+  --context /dev/null \
+  --commit-trigger-enabled false \
+  --base-image-trigger-enabled false
+```
+
+La tâche utilise l'authentification ACR native du registre en mode RBAC classique. Sa création ne
+prouve pas à elle seule qu'une exécution fonctionnera : contrôler les logs après la première
+exécution. Un registre configuré en mode **RBAC Registry + ABAC Repository Permissions** requiert
+des droits explicites pour la tâche ; ne pas modifier ce mode pour contourner une restriction IAM.
+
+La purge ne retire pas les verrous et sa création ne lance pas de suppression immédiate.
+L'heure planifiée correspond à 04 h à Paris en hiver et 05 h en été. Les exécutions ACR Tasks sont
+facturées ; à moins de 10 Go sur l'offre Basic, le nettoyage ne réduit pas le forfait du registre.
 
 ## 9. Checklist opérateur avant la Container App
 
