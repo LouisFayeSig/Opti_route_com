@@ -21,6 +21,8 @@ de provisionnement des périmètres est dans [deployment/EXPORT_ENTRA.md](deploy
 - ajout d'un ou plusieurs rendez-vous déjà planifiés : ils sont inclus même hors rayon, complétés au moindre détour le long de leur trajet et conservés lors d'un recalcul ;
 - retrait des seules visites facultatives depuis le résultat avec recalcul complet de la tournée ;
 - départ depuis une entreprise existante, affiché à l'ordre 0 ;
+- départ depuis une adresse de chantier : recherche par rue et ville, code postal facultatif,
+  puis sélection de l'adresse exacte parmi cinq propositions au maximum ;
 - fin de tournée à la dernière visite, sans trajet de retour ;
 - géocodage gratuit des adresses françaises par l'IGN / Base Adresse Nationale, avec cache SQLite ;
 - présélection des clients par rayon géographique ;

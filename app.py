@@ -22,10 +22,15 @@ from opti_route.auth import (
     render_account_controls,
     require_authentication,
 )
-from opti_route.azure_maps import AzureMapsClient
+from opti_route.azure_maps import AzureMapsClient, AzureMapsError, GeocodeResult
 from opti_route.cache import GeocodeCache
 from opti_route.config import Settings, load_settings
-from opti_route.contact import CONTACT_EMAIL, feedback_mailto, support_mailto
+from opti_route.contact import (
+    ACCOUNT_ACTIONS,
+    ACCOUNT_GROUPS,
+    CONTACT_EMAIL,
+    account_request_mailto,
+)
 from opti_route.data import (
     ALIASES,
     ClientDataError,
@@ -40,7 +45,7 @@ from opti_route.data import (
 )
 from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
-from opti_route.ign_geocoding import IgnGeocodingClient
+from opti_route.ign_geocoding import IgnGeocodingClient, IgnGeocodingError
 from opti_route.importing import geocoded_workbook_bytes
 from opti_route.map_view import (
     portfolio_points_from_clients,
@@ -1080,6 +1085,34 @@ def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> 
         st.caption(f"Identifiant de requête Azure : `{diagnostic.request_id}`")
 
 
+def _admin_account_request_panel() -> None:
+    st.caption(f"Destinataire : {CONTACT_EMAIL}")
+    display_name = " ".join(
+        st.text_input("Nom et prénom", key="admin_account_request_name").split()
+    )
+    action_column, group_column = st.columns(2)
+    action = action_column.selectbox(
+        "Type de demande",
+        ACCOUNT_ACTIONS,
+        format_func=str.capitalize,
+        key="admin_account_request_action",
+    )
+    group = group_column.selectbox(
+        "Groupe AD", ACCOUNT_GROUPS, key="admin_account_request_group"
+    )
+    if not display_name:
+        st.info("Renseignez le nom et le prénom pour préparer le brouillon.")
+        return
+    preposition = "du" if action == "supprimer" else "au"
+    st.text(f"Objet : Groupe AD {display_name} OptiRoute")
+    st.text(f"J'aimerais {action} {display_name} {preposition} groupe {group}")
+    st.link_button(
+        "Ouvrir le brouillon",
+        account_request_mailto(display_name, action, group),
+        use_container_width=True,
+    )
+
+
 def _render_admin_panel(
     store: ApplicationStore,
     user: AuthenticatedUser,
@@ -1090,8 +1123,14 @@ def _render_admin_panel(
     azure_client: AzureMapsClient | None,
 ) -> None:
     with st.expander("⚙️ Administration", expanded=clients is None):
-        portfolio_tab, access_tab, settings_tab, diagnostic_tab = st.tabs(
-            ["Portefeuille d'entreprises", "Habilitations", "Contraintes", "Diagnostic Azure"]
+        portfolio_tab, access_tab, requests_tab, settings_tab, diagnostic_tab = st.tabs(
+            [
+                "Portefeuille d'entreprises",
+                "Habilitations",
+                "Demandes de groupe AD",
+                "Contraintes",
+                "Diagnostic Azure",
+            ]
         )
         with portfolio_tab:
             _admin_import_panel(
@@ -1104,6 +1143,8 @@ def _render_admin_panel(
             )
         with access_tab:
             _admin_access_panel(store, user, clients)
+        with requests_tab:
+            _admin_account_request_panel()
         with settings_tab:
             _admin_settings_panel(store, configuration)
         with diagnostic_tab:
@@ -1119,6 +1160,72 @@ def _clear_selectbox_value(widget_key: str) -> None:
     """Efface un choix de liste via un callback exécuté avant le prochain rendu."""
 
     st.session_state[widget_key] = None
+
+
+def _worksite_search_panel(
+    identifier: str,
+    geocoding_client: IgnGeocodingClient,
+    fallback_client: AzureMapsClient | None,
+) -> tuple[str, GeocodeResult | None]:
+    address = st.text_input(
+        "Adresse du rendez-vous chantier",
+        placeholder="14 rue du Test, Nantes",
+        key=f"worksite_address_{identifier}",
+        help=(
+            "Saisissez le numéro, la rue et la ville. Le code postal est facultatif. "
+            "Vous pouvez aussi écrire « 14 rue du Test, 44 Nantes ». "
+            "Recherchez puis sélectionnez l'adresse exacte parmi les propositions."
+        ),
+    ).strip()
+    results_key = f"worksite_results_{identifier}"
+    choice_key = f"worksite_choice_{identifier}"
+    previous_search = st.session_state.get(results_key)
+    if previous_search is not None and previous_search["query"] != address:
+        st.session_state.pop(results_key, None)
+        st.session_state.pop(choice_key, None)
+    if st.button(
+        "Rechercher l'adresse", key=f"search_worksite_{identifier}", disabled=not address
+    ):
+        st.session_state.pop(results_key, None)
+        st.session_state.pop(choice_key, None)
+        try:
+            with st.spinner("Recherche des adresses…"):
+                try:
+                    results = geocoding_client.search(address)
+                except IgnGeocodingError:
+                    if fallback_client is None:
+                        raise
+                    results = fallback_client.search(address)
+                else:
+                    if not results and fallback_client is not None:
+                        results = fallback_client.search(address)
+            st.session_state[results_key] = {"query": address, "results": results}
+        except (IgnGeocodingError, AzureMapsError) as exc:
+            st.error(str(exc))
+    search = st.session_state.get(results_key)
+    if search is None:
+        return address, None
+    results = search["results"]
+    if not results:
+        st.warning(
+            "Aucune adresse trouvée. Précisez le numéro, la rue et la ville ; "
+            "vous pouvez omettre le code postal."
+        )
+        return address, None
+    choice = st.selectbox(
+        "Adresse du chantier à retenir",
+        [None, *range(len(results))],
+        format_func=lambda index: (
+            "— Sélectionner l'adresse exacte —"
+            if index is None else results[index].formatted_address
+        ),
+        key=choice_key,
+    )
+    if choice is None:
+        return address, None
+    result = results[choice]
+    st.caption(f"Adresse retenue : {result.formatted_address}")
+    return address, result
 
 
 def _configured_local_test_profile(
@@ -1404,24 +1511,6 @@ with status_column:
 with account_column:
     render_account_controls(authenticated_user)
 
-with st.expander("Suggestions, avis et support", expanded=False):
-    st.caption(f"Contact : {CONTACT_EMAIL} · Choisissez le sujet pour ouvrir un e-mail prérempli.")
-    contact_name = authenticated_user.display_name if authenticated_user.method != "none" else ""
-    contact_email = (
-        authenticated_user.principal_name if "@" in authenticated_user.principal_name else ""
-    )
-    feedback_column, support_column = st.columns(2)
-    feedback_column.link_button(
-        "Partager une suggestion ou un avis",
-        feedback_mailto(contact_name, contact_email),
-        use_container_width=True,
-    )
-    support_column.link_button(
-        "Contacter le support",
-        support_mailto(contact_name, contact_email),
-        use_container_width=True,
-    )
-
 try:
     store = _initialize_app_store(settings)
     clients, portfolio_metadata, route_configuration = _load_persistent_app_state(
@@ -1624,12 +1713,11 @@ with controls_column:
                 args=(start_client_key,),
             )
         st.caption("ou")
-        worksite_address = st.text_input(
-            "Adresse du rendez-vous chantier",
-            placeholder="14 rue …, 14000 Caen",
-            key=f"worksite_address_{selection_identifier}",
-            help="Saisissez l'adresse complète du lieu de rendez-vous lorsque le départ ne se fait pas depuis une entreprise.",
-        ).strip()
+        worksite_address, worksite_result = _worksite_search_panel(
+            selection_identifier,
+            ign_geocoding_client,
+            azure_client if settings.geocoding_azure_fallback else None,
+        )
         start_client_id = (
             str(appointment_options.at[selected_start_index, "client_id"])
             if selected_start_index is not None
@@ -1709,6 +1797,11 @@ with controls_column:
                 )
             if clients_for_route.empty:
                 raise PlanningError("Sélectionnez au moins une entreprise ou ajoutez un rendez-vous planifié.")
+            if start_client_id is None and worksite_result is None:
+                raise PlanningError(
+                    "Recherchez l'adresse du chantier puis sélectionnez l'adresse exacte "
+                    "parmi les propositions avant de générer la tournée."
+                )
             if len(planned_appointment_ids) > route_configuration.max_visits:
                 raise PlanningError(
                     "Réduisez le nombre de rendez-vous ajoutés avant de générer la tournée."
@@ -1738,9 +1831,9 @@ with controls_column:
                         {
                             "client_id": start_reference_id,
                             "client_name": "Rendez-vous chantier",
-                            "full_address": worksite_address,
-                            "latitude": pd.NA,
-                            "longitude": pd.NA,
+                            "full_address": worksite_result.formatted_address,
+                            "latitude": worksite_result.latitude,
+                            "longitude": worksite_result.longitude,
                         }
                     ]
                 )

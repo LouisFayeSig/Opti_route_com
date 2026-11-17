@@ -11,7 +11,9 @@ from streamlit.testing.v1 import AppTest
 
 from opti_route.access import AccessDeniedError, authorize_portfolio
 from opti_route.auth import AuthenticatedUser
+from opti_route.azure_maps import GeocodeResult
 from opti_route.config import load_settings
+from opti_route.ign_geocoding import IgnGeocodingClient
 from opti_route.portfolio_view import (
     SCOPE_AGENCY,
     SCOPE_ALL,
@@ -554,6 +556,52 @@ def test_atc_only_gets_its_own_portfolio_without_extra_scope_controls(regional_a
     app = regional_app("test-atc")
     assert all(item.label != "Périmètre du calque" for item in app.radio)
     assert _map_labels(app) == {"Sarah client"}
+
+
+def test_worksite_uses_the_confirmed_address_and_invalidates_a_changed_query(
+    regional_app, monkeypatch,
+) -> None:
+    results = [
+        GeocodeResult(48.510, -2.760, "1 rue du Test, 22000 Saint-Brieuc"),
+        GeocodeResult(48.515, -2.765, "1 rue du Test prolongée, 22000 Saint-Brieuc"),
+    ]
+    searches = []
+
+    def search(self, address):
+        searches.append(address)
+        return results
+
+    def unexpected_geocode(self, address):
+        pytest.fail(f"L'adresse choisie ne doit pas être géocodée à nouveau : {address}")
+
+    monkeypatch.setattr(IgnGeocodingClient, "search", search)
+    monkeypatch.setattr(IgnGeocodingClient, "geocode", unexpected_geocode)
+    app = regional_app("test-atc")
+    address = next(item for item in app.text_input if item.label == "Adresse du rendez-vous chantier")
+    address.input("1 rue du Test, 22001 Saint-Brieuc").run()
+    next(item for item in app.button if item.label == "Générer ma tournée").click().run()
+    assert any("sélectionnez l'adresse exacte" in item.value for item in app.error)
+
+    next(item for item in app.button if item.label == "Rechercher l'adresse").click().run()
+    choice = next(item for item in app.selectbox if item.label == "Adresse du chantier à retenir")
+    assert choice.value is None
+    choice.select(1).run()
+    next(item for item in app.button if item.label == "Générer ma tournée").click().run()
+
+    assert not app.exception
+    plan = app.session_state["route_plan"]
+    assert (plan.start.latitude, plan.start.longitude, plan.start.address) == (
+        results[1].latitude, results[1].longitude, results[1].formatted_address,
+    )
+    assert searches == ["1 rue du Test, 22001 Saint-Brieuc"]
+
+    next(item for item in app.text_input if item.label == address.label).input(
+        "2 rue du Test, Saint-Brieuc"
+    ).run()
+    assert all(item.label != "Adresse du chantier à retenir" for item in app.selectbox)
+    next(item for item in app.button if item.label == "Générer ma tournée").click().run()
+    assert any("sélectionnez l'adresse exacte" in item.value for item in app.error)
+    assert len(searches) == 1
 
 
 def test_admin_can_prepare_and_update_an_atc_not_yet_in_the_portfolio(regional_app) -> None:

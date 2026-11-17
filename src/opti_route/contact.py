@@ -5,6 +5,8 @@ from __future__ import annotations
 from urllib.parse import quote, urlencode
 
 CONTACT_EMAIL = "l.faye@sigplc.fr"
+ACCOUNT_ACTIONS = ("ajouter", "modifier", "supprimer")
+ACCOUNT_GROUPS = ("DR", "ATC", "ADMIN", "RAG")
 
 
 def contact_mailto(subject: str, body: str) -> str:
@@ -13,48 +15,14 @@ def contact_mailto(subject: str, body: str) -> str:
     return f"mailto:{CONTACT_EMAIL}?{query}"
 
 
-def account_request_mailto() -> str:
+def account_request_mailto(display_name: str, action: str, group: str) -> str:
+    display_name = " ".join(display_name.split())
+    if not display_name:
+        raise ValueError("Le nom et le prénom sont obligatoires.")
+    if action not in ACCOUNT_ACTIONS or group not in ACCOUNT_GROUPS:
+        raise ValueError("Le type de demande ou le groupe AD est invalide.")
+    preposition = "du" if action == "supprimer" else "au"
     return contact_mailto(
-        "Optiroute - Ajout / modification / suppression de compte",
-        "Bonjour,\n\n"
-        "Je souhaite demander (conserver la mention utile) :\n"
-        "Ajout / Modification / Suppression de compte\n\n"
-        "Personne concernée par la demande :\n"
-        "Nom et prénom : \n"
-        "Adresse e-mail professionnelle : \n"
-        "Poste / fonction : \n"
-        "Agence / région : \n\n"
-        "Détails de la demande : \n\n"
-        "Nom du demandeur : \n\n"
-        "Merci.",
-    )
-
-
-def feedback_mailto(display_name: str = "", email: str = "") -> str:
-    return contact_mailto(
-        "Optiroute - Suggestion ou avis",
-        "Bonjour,\n\n"
-        "Je souhaite partager une suggestion ou un avis sur Optiroute.\n\n"
-        f"Nom et prénom : {display_name}\n"
-        f"Adresse e-mail : {email}\n"
-        "Poste / fonction : \n\n"
-        "Fonctionnalité concernée : \n"
-        "Ma suggestion / mon avis : \n\n"
-        "Merci.",
-    )
-
-
-def support_mailto(display_name: str = "", email: str = "") -> str:
-    return contact_mailto(
-        "Optiroute - Demande de support",
-        "Bonjour,\n\n"
-        "J'ai besoin d'aide avec Optiroute.\n\n"
-        f"Nom et prénom : {display_name}\n"
-        f"Adresse e-mail : {email}\n"
-        "Poste / fonction : \n\n"
-        "Écran / fonctionnalité concerné(e) : \n"
-        "Problème rencontré / message d'erreur : \n"
-        "Étapes pour reproduire le problème : \n"
-        "Date et heure du problème : \n\n"
-        "Merci.",
+        f"Groupe AD {display_name} OptiRoute",
+        f"J'aimerais {action} {display_name} {preposition} groupe {group}",
     )

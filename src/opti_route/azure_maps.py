@@ -13,7 +13,12 @@ from PIL import ImageDraw
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .geocoding_validation import coordinates_match_address, geocoding_bbox, geocoding_query
+from .geocoding_validation import (
+    coordinates_match_address,
+    geocoding_bbox,
+    geocoding_query,
+    worksite_search_query,
+)
 from .image_labels import draw_stop_labels
 
 
@@ -150,6 +155,34 @@ class AzureMapsClient:
                 raise AzureMapsError("Résultat rejeté : coordonnées incompatibles avec l'adresse.")
             return result
         raise AzureMapsError(f"Aucun résultat de géocodage pour « {address} ».")
+
+    def search(self, address: str) -> list[GeocodeResult]:
+        params = {
+            "api-version": self.API_VERSION,
+            "query": self._safe_geocode_query(worksite_search_query(address)),
+            "top": 5,
+        }
+        bbox = geocoding_bbox(address)
+        if bbox:
+            params["bbox"] = bbox
+        payload = self._request_json("GET", "/geocode", params=params, headers=self._headers)
+        result_key = "features" if payload.get("features") else "results"
+        candidates = payload.get(result_key, [])
+        if not isinstance(candidates, list):
+            return []
+        results: list[GeocodeResult] = []
+        for candidate in candidates[:5]:
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                result = self._parse_geocode({result_key: [candidate]}, address)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if result is not None and coordinates_match_address(
+                result.latitude, result.longitude, address=address
+            ) and result not in results:
+                results.append(result)
+        return results
 
     @staticmethod
     def _multipoint_feature(

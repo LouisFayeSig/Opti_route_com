@@ -135,6 +135,24 @@ def geocoding_query(address: str) -> str:
     return address
 
 
+def worksite_search_query(address: str) -> str:
+    """Privilégie la rue et la ville plutôt qu'un code postal saisi à la main."""
+    query = geocoding_query(" ".join(address.split()))
+    locality = re.search(
+        r"(?P<separator>,\s*|\s+)(?P<code>[0-9]{5}|[0-9]{2,3}|2[AB])"
+        r"\s*,?\s*(?P<city>[^\W\d_][^,\d]*(?:,\s*(?:France|Monaco))?)$",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if locality and (
+        len(locality["code"]) == 5 or "," in locality["separator"]
+    ):
+        # Un département est accepté dans « rue, 44 Nantes ». Sans virgule,
+        # conserver les nombres des noms de rue, par exemple « du 11 Novembre ».
+        return f"{query[:locality.start()].rstrip(', ')}, {locality['city'].strip()}"
+    return query
+
+
 def sanitize_client_coordinates(clients: pd.DataFrame) -> pd.DataFrame:
     """Efface les deux coordonnées si la position contredit l'adresse attendue."""
     result = clients.copy()

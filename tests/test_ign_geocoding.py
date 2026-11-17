@@ -96,3 +96,37 @@ def test_geocoding_sanitizes_proxy_sensitive_characters() -> None:
 def test_ign_rate_limit_must_not_exceed_public_limit() -> None:
     with pytest.raises(ValueError, match="entre 0 et 50"):
         IgnGeocodingClient(max_requests_per_second=51)
+
+
+def test_worksite_search_returns_addresses_across_postcodes_in_one_request() -> None:
+    client = IgnGeocodingClient()
+    client.session = FakeSession([FakeResponse({"features": [
+        {"geometry": {"coordinates": [-1.55, 47.21]},
+         "properties": {"label": "14 rue du Test, 44000 Nantes", "type": "housenumber"}},
+        {"geometry": {"coordinates": [-1.56, 47.22]},
+         "properties": {"label": "14 rue du Test, 44300 Nantes", "type": "housenumber"}},
+        {"geometry": {"coordinates": [-1.55, 47.21]},
+         "properties": {"label": "Nantes", "type": "municipality"}},
+        {"geometry": {"coordinates": [40, 44]},
+         "properties": {"label": "Adresse hors de France"}},
+        {"geometry": {"coordinates": ["invalid", None]}},
+    ]})])
+
+    results = client.search("14 rue du Test, 44000 Nantes")
+
+    assert [result.formatted_address for result in results] == [
+        "14 rue du Test, 44000 Nantes", "14 rue du Test, 44300 Nantes",
+    ]
+    assert len(client.session.calls) == 1
+    assert client.session.calls[0][1]["params"] == {
+        "q": "14 rue du Test, Nantes", "limit": 5, "index": "address",
+    }
+
+
+def test_worksite_search_supports_a_department_without_a_postcode_filter() -> None:
+    client = IgnGeocodingClient()
+    client.session = FakeSession([FakeResponse({"features": []})])
+
+    assert client.search("14 rue du Test, 44 Nantes") == []
+    assert client.session.calls[0][1]["params"]["q"] == "14 rue du Test, Nantes"
+    assert "postcode" not in client.session.calls[0][1]["params"]

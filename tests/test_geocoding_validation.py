@@ -9,7 +9,25 @@ from opti_route.geocoding_validation import (
     geocoding_query,
     normalize_postal_code,
     sanitize_client_coordinates,
+    worksite_search_query,
 )
+
+
+@pytest.mark.parametrize(
+    ("address", "query"),
+    [
+        ("14 rue du Test, 44000 Nantes", "14 rue du Test, Nantes"),
+        ("14 rue du Test 44000 Nantes", "14 rue du Test, Nantes"),
+        ("14 rue du Test, 44000, Nantes, France", "14 rue du Test, Nantes, France"),
+        ("14 rue du Test, 44 Nantes", "14 rue du Test, Nantes"),
+        ("14 rue du Test, 974 Saint-Denis", "14 rue du Test, Saint-Denis"),
+        ("14 rue du Test, Nantes", "14 rue du Test, Nantes"),
+        ("14 rue du 11 Novembre Nantes", "14 rue du 11 Novembre Nantes"),
+        ("14 rue du Test, 44000", "14 rue du Test, 44000"),
+    ],
+)
+def test_worksite_search_relaxes_only_the_postal_locality(address, query) -> None:
+    assert worksite_search_query(address) == query
 
 
 @pytest.mark.parametrize(

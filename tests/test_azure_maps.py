@@ -104,6 +104,27 @@ def test_geocoding_biases_the_search_and_rejects_results_outside_france() -> Non
     assert client.session.calls[0][2]["params"]["bbox"] == "-5.6,41.0,10.0,51.6"
 
 
+def test_worksite_search_returns_multiple_addresses_without_the_entered_postcode() -> None:
+    client = AzureMapsClient("https://example.test", "secret")
+    client.session = FakeSession([FakeResponse({"features": [
+        {"geometry": {"coordinates": [-1.55, 47.21]},
+         "properties": {"address": {"formattedAddress": "14 rue du Test, 44300 Nantes"}}},
+        {"geometry": {"coordinates": [-1.56, 47.22]},
+         "properties": {"address": {"formattedAddress": "14 rue du Test, 44100 Nantes"}}},
+        {"geometry": {"coordinates": [40, 44]}, "properties": {}},
+    ]})])
+
+    results = client.search("14 rue du Test, 44000 Nantes")
+
+    assert [result.formatted_address for result in results] == [
+        "14 rue du Test, 44300 Nantes", "14 rue du Test, 44100 Nantes",
+    ]
+    assert len(client.session.calls) == 1
+    assert client.session.calls[0][2]["params"]["query"] == "14 rue du Test, Nantes"
+    assert client.session.calls[0][2]["params"]["top"] == 5
+    assert client.session.calls[0][2]["params"]["bbox"] == "-5.6,41.0,10.0,51.6"
+
+
 def test_geocoding_sanitizes_apostrophes_blocked_by_proxies() -> None:
     session = FakeSession(
         [

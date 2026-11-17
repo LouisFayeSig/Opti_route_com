@@ -14,6 +14,7 @@ from .geocoding_validation import (
     coordinates_match_address,
     geocoding_query,
     postal_code_from_address,
+    worksite_search_query,
 )
 
 
@@ -65,11 +66,13 @@ class IgnGeocodingClient:
         if remaining > 0:
             time.sleep(remaining)
 
-    def _request_json(self, address: str) -> dict[str, Any]:
+    def _request_json(
+        self, address: str, *, limit: int = 1, strict_postcode: bool = True
+    ) -> dict[str, Any]:
         self._respect_rate_limit()
-        params = {"q": self._safe_query(geocoding_query(address)), "limit": 1, "index": "address"}
+        params = {"q": self._safe_query(geocoding_query(address)), "limit": limit, "index": "address"}
         postcode = postal_code_from_address(address)
-        if postcode:
+        if postcode and strict_postcode:
             params["postcode"] = postcode
         try:
             response = self.session.get(
@@ -134,3 +137,26 @@ class IgnGeocodingClient:
         if not coordinates_match_address(result.latitude, result.longitude, address=address):
             raise IgnGeocodingError("Résultat rejeté : coordonnées incompatibles avec l'adresse.")
         return result
+
+    def search(self, address: str) -> list[GeocodeResult]:
+        """Propose plusieurs adresses à confirmer pour un rendez-vous chantier."""
+        payload = self._request_json(
+            worksite_search_query(address), limit=5, strict_postcode=False
+        )
+        features = payload.get("features", [])
+        if not isinstance(features, list):
+            return []
+        results: list[GeocodeResult] = []
+        for feature in features[:5]:
+            if (
+                isinstance(feature, dict)
+                and isinstance(feature.get("properties"), dict)
+                and feature["properties"].get("type") == "municipality"
+            ):
+                continue
+            result = self._parse({"features": [feature]}, address)
+            if result is not None and coordinates_match_address(
+                result.latitude, result.longitude, address=address
+            ) and result not in results:
+                results.append(result)
+        return results
