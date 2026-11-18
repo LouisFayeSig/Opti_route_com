@@ -294,6 +294,9 @@ manuellement, tout en gardant une prévisualisation humaine avant écriture.
 
 ## 7. Image et exploitation
 
+Le branchement Azure Monitor vers le workspace existant, les événements d'utilisation
+et les requêtes journalières sont décrits dans [MONITORING.md](MONITORING.md).
+
 Le `Dockerfile` exécute Streamlit avec un utilisateur Linux non-root. Pour une première mise en
 production économique, utiliser 0,5 vCPU, 1 Gio de mémoire, `minReplicas=0` et `maxReplicas=1`.
 Augmenter ensuite le maximum après un test de charge et de reconnexion WebSocket.

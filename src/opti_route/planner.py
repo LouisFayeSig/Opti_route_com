@@ -9,6 +9,7 @@ import pandas as pd
 from .azure_maps import AzureMapsClient, AzureMapsError
 from .geo import clients_within_radius, estimated_road_matrix, haversine_km
 from .optimizer import optimize_route
+from .telemetry import traced
 
 
 class PlanningError(RuntimeError):
@@ -250,6 +251,7 @@ def _select_low_detour_candidates(
     return pd.DataFrame(selected_rows).reset_index(drop=True)
 
 
+@traced("route_calculated")
 def build_route_plan(
     clients: pd.DataFrame,
     start: StartPoint,
@@ -455,6 +457,7 @@ def build_route_plan(
     )
 
 
+@traced("route_recalculated")
 def rebuild_route_plan(
     plan: RoutePlan,
     retained_visit_positions: list[int],

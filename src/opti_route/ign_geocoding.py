@@ -16,6 +16,7 @@ from .geocoding_validation import (
     postal_code_from_address,
     worksite_search_query,
 )
+from .telemetry import request as tracked_request
 
 
 class IgnGeocodingError(RuntimeError):
@@ -75,8 +76,12 @@ class IgnGeocodingClient:
         if postcode and strict_postcode:
             params["postcode"] = postcode
         try:
-            response = self.session.get(
+            response = tracked_request(
+                self.session.get,
                 self.endpoint,
+                method="GET",
+                service="ign",
+                operation="geocode",
                 params=params,
                 headers={
                     "Accept": "application/json",

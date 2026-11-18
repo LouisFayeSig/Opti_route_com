@@ -46,6 +46,7 @@ from opti_route.data import (
 from opti_route.exporting import google_maps_url, pdf_bytes
 from opti_route.geocoding import geocode_missing_clients
 from opti_route.ign_geocoding import IgnGeocodingClient, IgnGeocodingError
+from opti_route.telemetry import bind_session, reset_context, session_event
 from opti_route.importing import geocoded_workbook_bytes
 from opti_route.map_view import (
     portfolio_points_from_clients,
@@ -1466,6 +1467,8 @@ def _render_results(
             file_name=f"{plan.export_stem}.pdf",
             mime="application/pdf",
             use_container_width=True,
+            on_click=session_event,
+            args=(authenticated_user, st.session_state, "pdf_download_requested"),
         )
         export_columns[1].link_button(
             "Ouvrir dans Google Maps",
@@ -1474,7 +1477,9 @@ def _render_results(
         )
 
 
+reset_context()
 authenticated_user = require_authentication(settings)
+bind_session(authenticated_user, st.session_state)
 azure_client = (
     AzureMapsClient(
         settings.azure_maps_endpoint,

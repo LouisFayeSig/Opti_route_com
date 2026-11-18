@@ -20,6 +20,7 @@ from .geocoding_validation import (
     worksite_search_query,
 )
 from .image_labels import draw_stop_labels
+from .telemetry import request as tracked_request
 
 
 class AzureMapsError(RuntimeError):
@@ -70,9 +71,13 @@ class AzureMapsClient:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         try:
-            return self.session.request(
+            return tracked_request(
+                self.session.request,
                 method,
                 f"{self.endpoint}{path}",
+                method=method,
+                service="azure_maps",
+                operation=path.split("?", 1)[0],
                 timeout=self.timeout_seconds,
                 **kwargs,
             )
