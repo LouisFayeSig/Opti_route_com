@@ -15,7 +15,12 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from opti_route.access import AccessDeniedError, authorize_portfolio, rag_portfolio_overview
-from opti_route.access_admin import _check_created, render_access_requests
+from opti_route.access_admin import (
+    _check_created,
+    render_access_requests,
+    render_backup_panel,
+    render_scope_catalog,
+)
 from opti_route.access_requests import AccessRequests
 from opti_route.auth import (
     ROLE_ATC,
@@ -170,6 +175,8 @@ FIELD_LABELS = {
     "salesperson_email": "E-mail du commercial",
     "rag_name": "N+1 / RAG",
     "rag_email": "E-mail du RAG",
+    "dr_name": "Directeur régional",
+    "dr_email": "E-mail du DR",
     "ug": "UG",
     "agency": "Agence",
     "agency_address": "Adresse agence",
@@ -470,6 +477,7 @@ def _admin_import_panel(
         geocoding_client,
         azure_fallback_client,
     )
+    render_backup_panel(_access_service(store), user)
     uploaded = st.file_uploader(
         "Importer et remplacer le portefeuille d'entreprises",
         type=["csv", "xls", "xlsx", "xlsm", "xlsb"],
@@ -669,20 +677,25 @@ def _admin_import_panel(
                     ),
                 )
                 progress_bar.empty()
-            if provisioning_plan is not None:
-                from opti_route.access_documents import guard_profile_write
+            with store.access_documents.transaction():
+                if provisioning_plan is not None:
+                    from opti_route.access_documents import guard_profile_write
 
-                for candidate in provisioning_plan.candidates:
-                    guard_profile_write(store, candidate.profile.principal_id, None)
-            store.save_clients(
-                enriched_clients,
-                source_name=uploaded.name,
-                imported_by=user.display_name,
-            )
-            if provisioning_plan is not None:
-                for candidate in provisioning_plan.candidates:
-                    store.save_access_profile(candidate.profile, updated_by=user.display_name)
-                provisioned_count = len(provisioning_plan.candidates)
+                    for candidate in provisioning_plan.candidates:
+                        guard_profile_write(store, candidate.profile.principal_id, None)
+                store.save_clients(
+                    enriched_clients,
+                    source_name=uploaded.name,
+                    imported_by=user.display_name,
+                )
+                if provisioning_plan is not None:
+                    for candidate in provisioning_plan.candidates:
+                        store.save_access_profile(candidate.profile, updated_by=user.display_name)
+                    provisioned_count = len(provisioning_plan.candidates)
+                users_sheet = users_sheet_name(sheets)
+                if users_sheet:
+                    users = read_tabular(io.BytesIO(file_bytes), filename=uploaded.name, sheet_name=users_sheet)
+                    _access_service(store).catalog.import_users(user, users, enriched_clients)
         except StorageError as exc:
             st.error(str(exc))
         else:
@@ -835,11 +848,31 @@ def _admin_access_panel(
     else:
         st.info("Aucune habilitation ATC, RAG ou DR n'est encore configurée.")
 
+    render_scope_catalog(_access_service(store), user)
     st.markdown("##### Ajouter ou mettre à jour une habilitation")
     st.caption(
         "Utilisez le claim `oid` du compte Entra. Un rôle administrateur n'a pas besoin "
         "d'habilitation, car son périmètre est global."
     )
+    profile_choices = {profile.principal_id: profile for profile in profiles}
+
+    def populate_access_form():
+        selected = profile_choices.get(st.session_state.get("access_profile_selection"))
+        if selected is None:
+            st.session_state.update({"access_principal_id": "", "access_display_name": ""})
+            return
+        st.session_state.update({
+            "access_principal_id": selected.principal_id, "access_display_name": selected.display_name,
+            "access_role": role_labels[selected.role], "access_atc_mode": "Saisie manuelle",
+            "access_atc_code": selected.atc_code or "", "access_atc_name": selected.atc_name or "",
+            "access_atc_email": selected.atc_email or "", "access_rag_mode": "Saisie manuelle",
+            "access_rag_email_manual": selected.rag_email or "", "access_dr_mode": "Saisie manuelle",
+            "access_dr_ugs_manual": "-".join(selected.ugs),
+        })
+
+    st.selectbox("Compte dont le périmètre doit être modifié", [None, *profile_choices],
+                 format_func=lambda value: "— Nouveau compte / saisie libre —" if value is None else f"{profile_choices[value].display_name} · {role_labels[profile_choices[value].role]}",
+                 key="access_profile_selection", on_change=populate_access_form)
     principal_id = st.text_input(
         "Object ID Entra",
         key="access_principal_id",
@@ -954,7 +987,10 @@ def _admin_access_panel(
         else:
             st.info("Aucun commercial disponible. Choisissez la saisie manuelle pour créer l'habilitation.")
     elif role_label == "RAG":
-        if not rag_rows.empty:
+        rag_mode = st.radio("Périmètre RAG", ["RAG existant", "Saisie manuelle"], index=0 if not rag_rows.empty else 1, horizontal=True, key="access_rag_mode")
+        if rag_mode == "Saisie manuelle":
+            selected_rag_email = st.text_input("E-mail N+1 / RAG à autoriser", key="access_rag_email_manual").strip() or None
+        elif not rag_rows.empty:
             rag_options = rag_rows.index.tolist()
             selected_rag_index = st.selectbox(
                 "RAG responsable des portefeuilles",
@@ -985,11 +1021,12 @@ def _admin_access_panel(
             if not agencies:
                 st.warning("Importez d'abord un portefeuille contenant des agences.")
     else:
-        selected_ugs = tuple(
-            st.multiselect("UG autorisées", ugs, key="access_ug_scope")
-        )
-        if not ugs:
-            st.warning("Importez d'abord un portefeuille contenant les codes UG.")
+        dr_mode = st.radio("Périmètre DR", ["UG du portefeuille", "Saisie manuelle"], index=0 if ugs else 1, horizontal=True, key="access_dr_mode")
+        if dr_mode == "Saisie manuelle":
+            manual_ugs = st.text_input("Codes UG / région à autoriser", placeholder="40-45-71-37", key="access_dr_ugs_manual")
+            selected_ugs = tuple(part.strip() for part in manual_ugs.split("-") if part.strip())
+        else:
+            selected_ugs = tuple(st.multiselect("UG autorisées", ugs, key="access_ug_scope"))
 
     if st.button(
         "Enregistrer l'habilitation",
@@ -1527,7 +1564,9 @@ try:
     login_signature = (authenticated_user.principal_id, authenticated_user.role,
                        authenticated_user.issued_at, authenticated_user.expires_at)
     if st.session_state.get("access_login_checked") != login_signature:
-        access_service.on_login(authenticated_user)
+        if access_service.on_login(authenticated_user):
+            _load_persistent_app_state.clear()
+            clients, portfolio_metadata, route_configuration = _load_persistent_app_state(settings.app_storage_backend, store)
         st.session_state["access_login_checked"] = login_signature
     access_service.ensure_session(authenticated_user)
 except (StorageError, ValueError, PermissionError) as exc:

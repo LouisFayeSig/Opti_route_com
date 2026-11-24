@@ -205,6 +205,18 @@ seulement les demandes en attente, à l'ouverture de leur onglet, au plus une fo
 15 minutes pour l'ensemble des administrateurs. Aucun traitement ne s'exécute lorsque l'application
 n'est pas utilisée. Voir la [configuration et recette Azure](deployment/ACCESS_REQUESTS.md).
 
+Les prête-noms sans Object ID sont désormais conservés dans **Habilitations → Prête-noms et
+périmètres sans compte Entra**. Les départs peuvent renommer les affectations en **rôle + ville**
+(par exemple ATC Angers) ; les ajouts ou changements de compte peuvent reprendre ces périmètres.
+Le même onglet permet de sélectionner un compte existant pour modifier son code ATC, son e-mail
+N+1/RAG ou les UG du DR, sans flux lorsque le groupe reste identique.
+
+Dans **Administration → Portefeuille d'entreprises**, **Préparer la sauvegarde à jour** génère
+un Excel des données et habilitations courantes ainsi qu'un ZIP contenant l'état métier complet.
+Ces téléchargements restent disponibles après un départ, une reprise ou une modification de
+périmètre ; ils ne nécessitent pas un nouvel import. L'Excel source externe est conservé tel quel.
+Les modalités d'export et de réimport figurent dans la [procédure d'habilitation](deployment/ACCESS_REQUESTS.md).
+
 ### Déploiement sur Streamlit Community Cloud
 
 Le fichier `.env` est local et ignoré par Git : il n'est donc jamais copié dans le conteneur Cloud.

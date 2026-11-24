@@ -51,6 +51,92 @@ nom, puis un nouveau contrôle. Une seule demande ouverte est autorisée par Obj
 celui-ci est inconnu, par nom/prénom normalisés. L'ajout d'un compte déjà actif dans un autre groupe
 invite à utiliser **Modifier**. Annuler un retrait ne réactive pas un profil déjà désactivé auparavant.
 
+## Prête-noms, départs et reprises de portefeuille
+
+Les lignes **Utilisateurs** sans Object ID des populations ATC, RAG et DR sont conservées dans un
+catalogue distinct. Elles ne créent aucun compte, aucun Object ID fictif et aucun droit de connexion.
+Le catalogue est alimenté lors de l'import du portefeuille, même si l'option de provisionnement des
+comptes est désactivée. Pour un portefeuille déjà importé avant cette évolution, utiliser
+**Habilitations → Prête-noms et périmètres sans compte Entra → Importer les prête-noms depuis un
+classeur Excel** : cela lit uniquement Utilisateurs et ne réimporte pas les clients.
+
+Le même panneau permet de créer ou compléter un périmètre sans compte. Le libellé est formé du
+rôle et de la ville ou du repère : **ATC Angers**, **RAG Bordeaux**, **DR Nantes**, ou **ATC 164**.
+Les libellés présents dans le classeur sont conservés. Une ligne incomplète reste visible et peut
+être complétée avant sa reprise. Le périmètre correspond à un code/nom commercial pour ATC, un
+e-mail N+1/RAG pour RAG, une liste d'UG pour DR.
+
+### Départ d'un collaborateur
+
+Dans **Demandes de groupe AD → Supprimer**, sélectionner le compte puis cocher **Conserver le
+portefeuille sous un prête-nom** et saisir la ville. L'enregistrement désactive immédiatement le
+compte et renomme ses affectations dans les données clients sous le libellé rôle + ville.
+Les codes, UG et les clés d'e-mail existantes sont conservés à cette étape. Pour RAG, le portefeuille
+commercial personnel est également renommé si son e-mail correspond à celui du responsable.
+Pour DR, les champs optionnels `dr_name` et `dr_email` permettent de conserver les libellés des
+responsables régionaux ; le passage au prête-nom renseigne `dr_name` sur les UG concernées.
+
+Le prête-nom est signalé **Départ en cours** jusqu'à confirmation du retrait AD, puis devient
+disponible. Annuler le retrait restaure les affectations précédentes, retire ce prête-nom du
+catalogue disponible et restaure uniquement l'accès désactivé par cette demande.
+
+### Reprise par un nouveau collaborateur ou un compte existant
+
+Dans **Demandes de groupe AD → Ajouter** ou **Modifier**, choisir le groupe cible puis sélectionner
+**Portefeuille / prête-nom à reprendre**. Le code ou périmètre est prérempli. Laisser cochée l'option
+de renommage et renseigner l'e-mail du repreneur, notamment pour RAG. Les affectations sont mises à
+jour au nom saisi pour le collaborateur. Pour ATC, le code renseigné est également appliqué aux
+clients repris ; un e-mail vide retire l'ancienne adresse et rattache par code et nom.
+
+Pour un ajout ou un changement de groupe, le renommage des clients et l'écriture du profil attendent
+la preuve AD ou une nouvelle connexion valide. Pour un compte déjà actif dans le même groupe,
+l'attribution du nouveau périmètre est appliquée directement et historisée avec preuve `ADMIN`.
+Un prête-nom attribué est conservé dans l'historique du catalogue avec l'Object ID de son repreneur.
+
+### Modifier uniquement les droits de périmètre
+
+Dans **Habilitations**, sélectionner **Compte dont le périmètre doit être modifié**. Le compte,
+le rôle et les champs métier sont préremplis. Modifier le code/nom/e-mail ATC, l'e-mail N+1/RAG,
+ou les UG du DR, puis enregistrer. RAG et DR disposent d'une saisie libre en complément des listes
+du portefeuille. Le maintien du même groupe applique la modification directement, sans mail ni
+appel au flux ; le changement de groupe suit le cycle AD.
+
+### Persistance et prévention des conflits
+
+Les prête-noms sont des documents `access-scopes/<id>.json` dans le même stockage privé que les
+profils. Les affectations modifiées sont enregistrées dans le portefeuille normalisé de
+l'application. Dans **Portefeuille d'entreprises → Sauvegarde à jour du portefeuille**, cliquer
+sur **Préparer la sauvegarde à jour**, puis télécharger :
+
+- **le portefeuille à jour (.xlsx)** : Listing client, Utilisateurs, Habilitations, Prete-noms,
+  Demandes AD et une feuille Lire-moi ;
+- **la sauvegarde complète (.zip)** : le même Excel et `etat_application.json`, contenant les
+  profils métier stockés, les états d'accès (y compris les désactivations ADMIN), le catalogue,
+  les demandes en cours et archivées, les clients et les réglages métier.
+
+La copie est construite sur les données persistantes sous verrou, au moment du clic, puis datée
+en heure de Paris. Elle ne dépend pas du dernier fichier chargé ou des anciennes données affichées
+en cache. Régénérer la copie après toute nouvelle modification. Les chaînes Excel sont enregistrées
+comme texte littéral afin de préserver les valeurs et d'éviter l'interprétation comme formules.
+
+**Le fichier Excel source dans OneDrive ou sur le poste de l'admin n'est pas écrasé automatiquement.**
+Le téléchargement fournit sa copie métier actualisée. Cette reconstruction contient les colonnes
+utilisées par l'application ; elle ne peut pas restituer les feuilles ou colonnes non importées du
+classeur original. Les secrets de connexion, URL du flux et clés Azure ne sont pas exportés.
+
+Le nouvel Excel peut être utilisé comme source de clients en sélectionnant **Listing client** et,
+pour conserver les droits existants, **Ne pas modifier les habilitations**. Le provisionnement à
+partir de Utilisateurs conserve les règles Entra habituelles : un e-mail/UPN est nécessaire pour
+ATC, RAG et DR. Les profils par code seul et les désactivations restent intégralement conservés
+dans Habilitations et dans le JSON. **L'import Excel classique ne restaure pas automatiquement les
+documents du JSON** ; conserver l'archive pour une reprise complète de l'état métier.
+
+Chaque renommage conserve les clients concernés et les valeurs avant/après pour permettre sa
+reprise après interruption et son annulation. Deux réaffectations ouvertes ne peuvent pas porter
+sur les mêmes clients. Un import complet est bloqué tant qu'une demande réaffecte un portefeuille ;
+il redevient disponible après clôture ou annulation. Les écritures partagent le verrou et les ETags
+du cycle d'habilitation. Les documents sont limités à 16 Mio pour les journaux d'affectation.
+
 ## Contrôles et sessions
 
 Un contrôle automatique des demandes en attente a lieu à l'ouverture de leur onglet, avec un délai

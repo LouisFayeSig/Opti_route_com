@@ -819,6 +819,119 @@ def test_disabled_admin_cannot_see_admin_controls_on_next_interaction(regional_a
     assert all(item.label != "⚙️ Administration" for item in app.expander)
 
 
+@pytest.mark.parametrize("group", ["ATC", "RAG", "DR"])
+def test_admin_can_select_and_change_existing_business_scope_without_ad(regional_app, verified_flow, group):
+    service = AccessRequests(AppStore(load_settings().app_storage_path))
+    oid = "11111111-1111-4111-8111-111111111111"
+    fields = {"ATC": {"atc_code": "20-01-001", "atc_name": "Sarah EDIR", "atc_email": "s.edir@litt.fr"},
+              "RAG": {"rag_email": "rag@example.test"}, "DR": {"ugs": ("20",)}}[group]
+    service.store.save_access_profile(UserAccessProfile(oid, "Compte à modifier", group.lower(), **fields), updated_by="test")
+    app = regional_app("test-admin")
+    app.selectbox(key="access_profile_selection").set_value(oid).run()
+    assert app.text_input(key="access_principal_id").value == oid
+    assert app.radio(key="access_role").value == group
+    if group == "ATC":
+        assert app.text_input(key="access_atc_code").value == "20-01-001"
+        app.text_input(key="access_atc_code").input("24-01-002")
+        app.text_input(key="access_atc_name").input("Meline TRILLAUD")
+        app.text_input(key="access_atc_email").input("m.trillaudstbrieuc@litt.fr")
+    elif group == "RAG":
+        assert app.text_input(key="access_rag_email_manual").value == "rag@example.test"
+        app.text_input(key="access_rag_email_manual").input("autre.rag@example.test")
+    else:
+        assert app.text_input(key="access_dr_ugs_manual").value == "20"
+        app.text_input(key="access_dr_ugs_manual").input("24-40")
+    app.button(key="save_access_profile").click().run()
+    assert not app.exception
+    assert verified_flow == []
+    updated = service.store.load_access_profile(oid)
+    assert {"ATC": updated.atc_code, "RAG": updated.rag_email, "DR": updated.ugs}[group] == {"ATC": "24-01-002", "RAG": "autre.rag@example.test", "DR": ("24", "40")}[group]
+
+
+def test_requests_ui_reclaims_a_placeholder_and_renames_clients(regional_app, verified_flow):
+    app = regional_app("test-admin")
+    service = AccessRequests(AppStore(load_settings().app_storage_path))
+    record = service.catalog.save(AuthenticatedUser("Admin", "password", "admin", "local:test-admin"),
+                                  group="ATC", city="Angers", scope={"atc_code": "20-01-001", "atc_name": "Sarah EDIR"})
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    selector = app.selectbox(key="request_catalog_AJOUTER__ATC")
+    selector.set_value(record["id"])
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    app.text_input(key="request_nom_new").input("Dupont")
+    app.text_input(key="request_prenom_new").input("Jean")
+    assert app.text_input(key=f"request_scope__ATC_{record['id']}_code").value == "20-01-001"
+    app.text_input(key=f"request_scope__ATC_{record['id']}_email").input("jean@example.test")
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.button(key="create_access_request").click().run()
+    assert not app.exception
+    portfolio = service.store.load_clients()[0]
+    assert portfolio.loc[0, "salesperson"] == "Dupont Jean"
+    assert portfolio.loc[0, "salesperson_email"] == "jean@example.test"
+    assert portfolio.loc[1, "salesperson"] == "Meline TRILLAUD"
+    assert service.catalog.get(record["id"])["assigned_to"] == "11111111-1111-4111-8111-111111111111"
+
+
+def test_requests_ui_vacates_a_departing_account_under_role_and_city(regional_app, verified_flow):
+    service = AccessRequests(AppStore(load_settings().app_storage_path))
+    oid = "11111111-1111-4111-8111-111111111111"
+    service.store.save_access_profile(UserAccessProfile(oid, "Sarah", "atc", atc_code="20-01-001", atc_name="Sarah EDIR", atc_email="s.edir@litt.fr"), updated_by="test")
+    app = regional_app("test-admin")
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    app.selectbox(key="request_action").set_value("Supprimer")
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    app.selectbox(key="request_profile").set_value(oid)
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    app.checkbox(key=f"request_vacate_{oid}").set_value(True)
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    app.text_input(key=f"request_vacate_city_{oid}").input("Angers")
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.button(key="create_access_request").click().run()
+    assert not app.exception
+    assert service.blocked(oid)
+    assert service.store.load_clients()[0].loc[0, "salesperson"] == "ATC Angers"
+    assert service.catalog.entries()[0]["display_name"] == "ATC Angers"
+    assert service.catalog.entries()[0]["available"]
+
+
+def test_existing_portfolio_can_import_unidentified_users_without_reimporting_clients(regional_app, monkeypatch):
+    app = regional_app("test-admin")
+    book = BytesIO()
+    with pd.ExcelWriter(book, engine="openpyxl") as writer:
+        pd.DataFrame({"Rôle Entra": ["ATC"], "Nom affiché": ["ATC Angers"], "Object ID": [None], "Code ATC": ["164"]}).to_excel(writer, sheet_name="Utilisateurs", index=False)
+    uploaded = SimpleNamespace(name="catalogue.xlsx", getvalue=book.getvalue)
+    monkeypatch.setattr(st, "file_uploader", lambda label, *args, **kwargs: uploaded if kwargs.get("key") == "scope_catalog_workbook" else None)
+    service = AccessRequests(AppStore(load_settings().app_storage_path))
+    before = service.store.load_clients()[1].digest
+    app.checkbox(key="scope_catalog_import").set_value(True).run()
+    app.button(key="scope_catalog_import_button").click().run()
+    assert not app.exception
+    assert service.catalog.entries()[0]["display_name"] == "ATC Angers"
+    assert service.store.load_clients()[1].digest == before
+    assert not any(profile.atc_code == "164" for profile in service.store.list_access_profiles())
+
+
+def test_admin_backup_uses_current_storage_even_if_the_screen_had_cached_clients(regional_app):
+    app = regional_app("test-admin")
+    store = AppStore(load_settings().app_storage_path)
+    clients, _ = store.load_clients()
+    clients.loc[0, "salesperson"] = "ATC Angers"
+    store.save_clients(clients, source_name="clients.xlsx", imported_by="test")
+    app.button(key="prepare_current_backup").click().run()
+    assert not app.exception
+    prepared = app.session_state["admin_current_backup"]
+    copied = pd.read_excel(BytesIO(prepared["workbook"]), sheet_name="Listing client", dtype=str)
+    assert copied.loc[0, "salesperson"] == "ATC Angers"
+    labels = {item.label for item in app.get("download_button")}
+    assert "Télécharger le portefeuille à jour (.xlsx)" in labels
+    assert "Télécharger la sauvegarde complète (.zip)" in labels
+
+
 def test_non_admin_never_triggers_access_flow(regional_app, verified_flow):
     app = regional_app("test-atc")
     app.run()

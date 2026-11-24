@@ -18,13 +18,15 @@ from azure.core.exceptions import (
 
 from .storage import StorageError
 
+MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
+
 
 class StorageConflict(StorageError):
     pass
 
 
 def validate_key(key):
-    if not key.startswith(("access-requests/", "access-state/")) or ".." in key or "\\" in key:
+    if not key.startswith(("access-requests/", "access-state/", "access-scopes/")) or ".." in key or "\\" in key:
         raise StorageError("Clé de document d'habilitation invalide.")
 
 
@@ -36,6 +38,16 @@ def guard_profile_write(store, principal_id, request_id):
     owner = (state or {}).get("pending_request_id")
     if owner is not None and owner != request_id:
         raise StorageConflict("Une demande est en cours pour ce compte. Terminez-la avant de modifier ou réimporter son profil.")
+
+
+def guard_portfolio_write(store, request_id):
+    if request_id is not None:
+        return
+    documents = store.access_documents
+    for key in documents.keys("access-requests/pending/"):
+        request, _ = documents.read(key)
+        if request and request.get("statut") in {"EN_ATTENTE", "A_PRECISER"} and (request.get("portfolio_change") or request.get("vacancy")):
+            raise StorageConflict("Une réaffectation de portefeuille est en cours. Terminez ou annulez la demande avant de réimporter les clients.")
 
 
 class SQLiteJsonStore:
@@ -65,6 +77,8 @@ class SQLiteJsonStore:
         validate_key(key)
         etag = uuid4().hex
         payload = json.dumps(document, ensure_ascii=False, allow_nan=False)
+        if len(payload.encode("utf-8")) > MAX_DOCUMENT_BYTES:
+            raise StorageError("Document d'habilitation trop volumineux.")
         try:
             with self.store._connection() as connection:
                 if expected_etag is None:
@@ -134,7 +148,7 @@ class AzureBlobJsonStore:
         validate_key(key)
         try:
             download = self.container.get_blob_client(key).download_blob(max_concurrency=1)
-            if download.properties.size > 2 * 1024 * 1024:
+            if download.properties.size > MAX_DOCUMENT_BYTES:
                 raise StorageError("Document d'habilitation trop volumineux.")
             document = json.loads(download.readall().decode("utf-8"))
             if not isinstance(document, dict):
@@ -147,13 +161,16 @@ class AzureBlobJsonStore:
 
     def write(self, key, document, expected_etag):
         validate_key(key)
+        payload = json.dumps(document, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(payload) > MAX_DOCUMENT_BYTES:
+            raise StorageError("Document d'habilitation trop volumineux.")
         self._renew()
         options = {"overwrite": False} if expected_etag is None else {
             "overwrite": True, "etag": expected_etag, "match_condition": MatchConditions.IfNotModified,
         }
         try:
             result = self.container.get_blob_client(key).upload_blob(
-                json.dumps(document, ensure_ascii=False, allow_nan=False).encode("utf-8"), **options,
+                payload, **options,
             )
             return result["etag"]
         except HttpResponseError as exc:

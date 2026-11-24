@@ -106,6 +106,8 @@ _CLIENT_COLUMNS = (
     "salesperson_email",
     "rag_name",
     "rag_email",
+    "dr_name",
+    "dr_email",
     "ug",
     "agency",
     "agency_address",
@@ -123,7 +125,7 @@ _CLIENT_COLUMNS = (
 _REQUIRED_CLIENT_COLUMNS = tuple(
     column
     for column in _CLIENT_COLUMNS
-    if column not in {"salesperson_email", "rag_name", "rag_email", "ug"}
+    if column not in {"salesperson_email", "rag_name", "rag_email", "ug", "dr_name", "dr_email"}
 )
 _OPTIONAL_CLIENT_COLUMNS = tuple(
     column for column in _CLIENT_COLUMNS if column not in _REQUIRED_CLIENT_COLUMNS
@@ -223,6 +225,7 @@ class ApplicationStore(Protocol):
         *,
         source_name: str,
         imported_by: str,
+        access_request_id: str | None = None,
     ) -> PortfolioMetadata: ...
 
     def load_clients(self) -> tuple[pd.DataFrame | None, PortfolioMetadata | None]: ...
@@ -422,7 +425,15 @@ class AppStore:
         *,
         source_name: str,
         imported_by: str,
+        access_request_id: str | None = None,
     ) -> PortfolioMetadata:
+        from .access_documents import guard_portfolio_write
+
+        with self.access_documents.transaction():
+            guard_portfolio_write(self, access_request_id)
+            return self._save_clients(clients, source_name=source_name, imported_by=imported_by)
+
+    def _save_clients(self, clients: pd.DataFrame, *, source_name: str, imported_by: str) -> PortfolioMetadata:
         payload, metadata = serialize_portfolio(
             clients,
             source_name=source_name,

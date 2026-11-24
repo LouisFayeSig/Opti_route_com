@@ -123,7 +123,16 @@ class AzureBlobAppStore:
         *,
         source_name: str,
         imported_by: str,
+        access_request_id: str | None = None,
     ) -> PortfolioMetadata:
+        from .access_documents import guard_portfolio_write
+
+        with self.access_documents.transaction():
+            guard_portfolio_write(self, access_request_id)
+            self.access_documents._renew()
+            return self._save_clients(clients, source_name=source_name, imported_by=imported_by)
+
+    def _save_clients(self, clients: pd.DataFrame, *, source_name: str, imported_by: str) -> PortfolioMetadata:
         payload, metadata = serialize_portfolio(
             clients,
             source_name=source_name,

@@ -139,6 +139,8 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "unite_gestion",
         "unite_de_gestion",
     ),
+    "dr_name": ("dr_name", "nom_dr", "directeur_regional", "responsable_regional"),
+    "dr_email": ("dr_email", "email_dr", "email_directeur_regional"),
     "agency": (
         "agency",
         "agence",
@@ -396,6 +398,8 @@ def standardize_clients(
         "salesperson_email",
         "rag_name",
         "rag_email",
+        "dr_name",
+        "dr_email",
         "ug",
         "agency",
         "agency_address",

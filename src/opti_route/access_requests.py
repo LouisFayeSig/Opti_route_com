@@ -13,6 +13,14 @@ from uuid import uuid4
 
 from .access_documents import StorageConflict
 from .flow_client import GROUPS, AdUnavailable, RequeteFluxInvalide, object_id
+from .scope_catalog import (
+    ScopeCatalog,
+    apply_assignment,
+    assignment_ids,
+    business_scope,
+    prepare_assignment,
+    retarget_assignment,
+)
 from .storage import StorageError, UserAccessProfile
 
 OPEN = {"EN_ATTENTE", "A_PRECISER"}
@@ -43,6 +51,10 @@ class AccessRequests:
 
     def _now(self):
         return self.clock().isoformat()
+
+    @property
+    def catalog(self):
+        return ScopeCatalog(self.store, self._actor, self.clock)
 
     def state(self, principal_id):
         principal_id = principal_id.strip().casefold()
@@ -122,8 +134,12 @@ class AccessRequests:
         with self.documents.transaction():
             requests = self._pending()
             for request in requests:
-                if request.get("application"):
+                if request.get("cancelling"):
+                    self._cancel(request)
+                elif request.get("application"):
                     self._finish(request, request["application"]["proof"])
+                elif request["statut"] in OPEN and request.get("vacancy"):
+                    self._maintain_vacancy(request)
                 elif request["statut"] not in OPEN:
                     self._archive(request)
             return sorted([request for request in self._pending() if request["statut"] in OPEN], key=lambda request: request["created_at"])
@@ -178,7 +194,8 @@ class AccessRequests:
             if match:
                 raise ValueError("Une demande est déjà en cours pour cette personne.")
 
-    def create(self, actor, *, action, group, nom="", prenom="", principal_id=None, old_group=None, scope=None):
+    def create(self, actor, *, action, group, nom="", prenom="", principal_id=None, old_group=None, scope=None,
+               catalog_id=None, rename_clients=False, vacant_city=None):
         self._actor(actor)
         if action not in {"AJOUTER", "MODIFIER", "SUPPRIMER"} or group not in GROUPS:
             raise ValueError("Action ou groupe invalide.")
@@ -216,6 +233,40 @@ class AccessRequests:
                 "requested_by": actor.principal_id, "created_at": self._now(),
                 "resolved_at": None, "resolved_by": None, "history": [],
             }
+            if catalog_id:
+                entry = self.catalog.get(catalog_id)
+                if action == "SUPPRIMER" or not entry or entry["group"] != group or not entry.get("available") or entry.get("cancelled"):
+                    raise ValueError("Ce prête-nom n'est pas disponible pour ce groupe.")
+                if entry.get("assigned_to") not in {None, principal_id}:
+                    raise ValueError("Ce périmètre a déjà été repris par un autre compte.")
+                request["catalog_id"] = catalog_id
+                request["catalog_name"] = entry["display_name"]
+                if rename_clients:
+                    name = f"{nom} {prenom}".strip() or (profile or {}).get("display_name", "")
+                    if not name:
+                        raise ValueError("Le nom du repreneur est obligatoire.")
+                    if group == "ATC":
+                        request["scope"]["atc_name"] = name
+                    request["portfolio_change"] = prepare_assignment(self.store, group, entry["scope"], name, request["scope"])
+            if vacant_city is not None:
+                if not vacant_city.strip():
+                    raise ValueError("La ville du prête-nom est obligatoire.")
+                if action != "SUPPRIMER" or not profile or group not in {"ATC", "RAG", "DR"}:
+                    raise ValueError("Le passage à un prête-nom nécessite le retrait d'un profil métier existant.")
+                name = f"{group} {' '.join(vacant_city.split())}"
+                previous_scope = business_scope(group, profile)
+                vacant_scope = {**previous_scope, **({"atc_name": name} if group == "ATC" else {})}
+                request["vacancy"] = {"id": request["id"], "name": name, "scope": vacant_scope,
+                                      "change": prepare_assignment(self.store, group, previous_scope, name)}
+            ids = assignment_ids(request.get("portfolio_change")) | assignment_ids(request.get("vacancy", {}).get("change"))
+            for other in self._pending():
+                if other["statut"] not in OPEN:
+                    continue
+                if catalog_id and other.get("catalog_id") == catalog_id:
+                    raise ValueError("Une reprise est déjà en cours pour ce prête-nom.")
+                other_ids = assignment_ids(other.get("portfolio_change")) | assignment_ids(other.get("vacancy", {}).get("change"))
+                if ids & other_ids:
+                    raise ValueError("Ces clients font déjà l'objet d'une réaffectation en cours.")
             self._duplicate(request)
             self._event(request, "CREEE")
             if action == "MODIFIER" and group == old_group:
@@ -240,7 +291,18 @@ class AccessRequests:
                 self._state(principal_id, state)
             if request["action"] == "MODIFIER_CODE":
                 self._finish(request, "ADMIN")
+            elif request.get("vacancy"):
+                self._maintain_vacancy(request)
             return request
+
+    def _maintain_vacancy(self, request, *, available=False):
+        vacancy = request["vacancy"]
+        apply_assignment(self.store, vacancy["change"], request["id"], request["requested_by"])
+        entry = self.catalog.get(vacancy["id"]) or {}
+        self.catalog.put({**entry, "id": vacancy["id"], "group": request["groupe"],
+                          "display_name": vacancy["name"], "scope": vacancy["scope"],
+                          "origin": "Départ", "available": available, "cancelled": False,
+                          "waiting_for": None if available else request["id"], "updated_at": self._now()})
 
     def _archive(self, request):
         month = request["resolved_at"][:7]
@@ -274,12 +336,20 @@ class AccessRequests:
             self._save(request)
             return
         if not request.get("application"):
+            if request.get("portfolio_change"):
+                name = f"{request['nom']} {request['prenom']}".strip()
+                retarget_assignment(request["portfolio_change"], name)
+                if request["groupe"] == "ATC":
+                    request["scope"]["atc_name"] = name
             request["application"] = {"proof": proof, "date": self._now()}
             self._save(request)
         if request["action"] == "SUPPRIMER":
             state.update(enabled=False, disabled_by_request_id=request["id"])
+            if request.get("vacancy"):
+                self._maintain_vacancy(request, available=True)
             status = "CLOTUREE"
         else:
+            apply_assignment(self.store, request.get("portfolio_change"), request["id"], request["requested_by"])
             if state.get("last_applied_request_id") != request["id"]:
                 display_name = " ".join((request["nom"], request["prenom"])).strip() or principal_id
                 if request["groupe"] == "ADMIN":
@@ -294,6 +364,11 @@ class AccessRequests:
             state.pop("disabled_by_request_id", None)
             status = "CONFIRMEE"
         self._state(principal_id, state)
+        if request.get("catalog_id"):
+            entry = self.catalog.get(request["catalog_id"])
+            if entry is None:
+                raise StorageConflict("Le prête-nom sélectionné n'est plus disponible.")
+            self.catalog.put({**entry, "available": False, "assigned_to": principal_id, "resolved_by_request": request["id"], "updated_at": self._now()})
         request.update(statut=status, resolved_at=self._now(), resolved_by=proof)
         request.pop("application", None)
         self._event(request, status, proof=proof)
@@ -305,6 +380,9 @@ class AccessRequests:
         with self.documents.transaction():
             request = self.get(request_id)
             if not request or request["statut"] not in OPEN:
+                return request
+            if request.get("cancelling"):
+                self._cancel(request)
                 return request
             if request.get("application"):
                 self._finish(request, request["application"]["proof"])
@@ -386,30 +464,45 @@ class AccessRequests:
             if request.get("application"):
                 self._finish(request, request["application"]["proof"])
                 raise ValueError("La demande était déjà en cours d'application et a été finalisée.")
-            if request["action"] == "SUPPRIMER":
-                state = self.state(request["objectId"])
-                if state.get("disabled_by_request_id") == request_id:
-                    state["enabled"] = request.get("previous_enabled", True)
-                    state.pop("disabled_by_request_id", None)
-                    self._state(request["objectId"], state)
-            request.update(statut="ANNULEE", resolved_at=self._now(), resolved_by="ADMIN")
-            self._event(request, "ANNULEE", actor=actor.principal_id)
+            request.update(cancelling=True, cancelled_by=actor.principal_id)
             self._save(request)
-            self._archive(request)
+            self._cancel(request)
             return request
+
+    def _cancel(self, request):
+        if request.get("vacancy"):
+            vacancy = request["vacancy"]
+            apply_assignment(self.store, vacancy["change"], request["id"], request["cancelled_by"], reverse=True)
+            entry = self.catalog.get(vacancy["id"])
+            if entry:
+                self.catalog.put({**entry, "available": False, "cancelled": True, "waiting_for": None})
+        if request["action"] == "SUPPRIMER":
+            state = self.state(request["objectId"])
+            if state.get("disabled_by_request_id") == request["id"]:
+                state["enabled"] = request.get("previous_enabled", True)
+                state.pop("disabled_by_request_id", None)
+                self._state(request["objectId"], state)
+        request.update(statut="ANNULEE", resolved_at=self._now(), resolved_by="ADMIN")
+        request.pop("cancelling", None)
+        self._event(request, "ANNULEE", actor=request["cancelled_by"])
+        self._save(request)
+        self._archive(request)
 
     def on_login(self, user):
         if user.method != "entra" or user.issued_at is None or user.expires_at is None:
             return
         if not user.issued_at <= self.clock().timestamp() < user.expires_at:
             return
+        confirmed = False
         with self.documents.transaction():
             for request in self._pending():
-                if (request["statut"] == "EN_ATTENTE" and request["action"] in {"AJOUTER", "MODIFIER"}
+                if (request["statut"] == "EN_ATTENTE" and not request.get("cancelling") and request["action"] in {"AJOUTER", "MODIFIER"}
                     and request.get("objectId") == user.principal_id.casefold()
                     and request["groupe"] == user.role.upper()
                     and user.issued_at >= datetime.fromisoformat(request["created_at"]).timestamp()):
                     self._finish(request, "CONNEXION")
+                    confirmed = True
+        return confirmed
 
     def check_pending(self, actor, *, automatic=False):
         self._actor(actor)

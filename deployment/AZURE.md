@@ -111,10 +111,11 @@ consentement délégué de lecture.
 
 ## 3. Configuration OIDC Streamlit
 
-Référencer dans Container Apps un secret nommé `streamlit-secrets`, fourni depuis Key Vault. Dans
-le volume secret, définir son chemin de fichier à `secrets.toml`, puis monter le volume au chemin
-`/app/.streamlit`. Streamlit lit alors directement le fichier
-`/app/.streamlit/secrets.toml`. Le contenu attendu est :
+Référencer dans Container Apps un secret nommé `streamlit-secrets`, fourni depuis Key Vault.
+Créer un volume `streamlit-config` de type **Secret**, contenant ce secret sous le nom de fichier
+`streamlit-secrets`, puis le monter sur `/mnt/opti-route-secrets`, sans sous-chemin.
+Le script `docker-entrypoint.sh` copie `/mnt/opti-route-secrets/streamlit-secrets` vers
+`/app/.streamlit/secrets.toml` au démarrage. Streamlit lit ce dernier fichier. Le contenu attendu est :
 
 ```toml
 [app]
@@ -149,17 +150,42 @@ identifiant ; `cookie_secret` est une valeur aléatoire longue, stable dans le t
 déconnecte toutes les sessions existantes.
 
 Dans `app-optiroute > Paramètres > Secrets`, créer ou mettre à jour le secret Container Apps
-`streamlit-secrets` comme référence à Key Vault. Dans **Volumes**, sélectionner ce secret et le
-publier comme fichier `secrets.toml`. Dans **Conteneurs > Montages de volume**, monter le volume
-sur `/app/.streamlit` sans sous-chemin. Le résultat attendu dans la réplique est exactement :
+`streamlit-secrets` comme référence à Key Vault. Si le secret Key Vault porte un autre nom après
+une restauration, conserver le nom Container Apps `streamlit-secrets` et actualiser sa référence.
+
+Dans la création d'une nouvelle révision, sélectionner le conteneur puis **Montages de volume** :
+
+| Champ | Valeur |
+|---|---|
+| Nom du volume | `streamlit-config` |
+| Type | `Secret` |
+| Secret sélectionné | `streamlit-secrets` (secret Container Apps) |
+| Nom du fichier dans le volume | `streamlit-secrets` ; nom par défaut du secret |
+| Chemin de montage | `/mnt/opti-route-secrets` |
+| Sous-chemin | Vide |
+
+Monter uniquement le secret sélectionné ; si le portail propose un chemin de fichier personnalisé,
+utiliser `streamlit-secrets`. Au démarrage, le script présent dans l'image effectue la copie :
 
 ```text
-/app/.streamlit/secrets.toml
+/mnt/opti-route-secrets/streamlit-secrets → /app/.streamlit/secrets.toml
 ```
+
+Si le volume existant expose déjà le fichier **`secrets.toml`**, il est aussi possible de conserver
+ce nom et de monter directement ce volume sur **`/app/.streamlit`**, sans sous-chemin. Streamlit
+lit alors `/app/.streamlit/secrets.toml` directement ; la copie conditionnelle du script est
+ignorée puisque sa source `/mnt/opti-route-secrets/streamlit-secrets` n'existe pas. Cette option
+évite de renommer le fichier d'un volume existant. Les deux associations valides sont :
+
+| Fichier exposé par le volume | Chemin de montage | Chargement |
+|---|---|---|
+| `secrets.toml` | `/app/.streamlit` | Lecture directe par Streamlit |
+| `streamlit-secrets` | `/mnt/opti-route-secrets` | Copie par le script au démarrage |
 
 Après toute modification de `streamlit-secrets`, créer une nouvelle révision ou redémarrer la
 révision active. La synchronisation Key Vault indique que Container Apps a lu la nouvelle valeur,
-mais elle ne redémarre pas à elle seule le processus Streamlit. Vérifier sans afficher les valeurs :
+mais le script doit être relancé pour copier le contenu à jour vers le fichier lu par Streamlit.
+Vérifier sans afficher les valeurs :
 
 ```sh
 python -c "import tomllib; p='/app/.streamlit/secrets.toml'; d=tomllib.load(open(p,'rb')); print(list(d)); print(d.get('app',{}).get('AUTH_MODE'))"
@@ -536,7 +562,7 @@ Avant d'annoncer un déploiement, vérifier dans cet ordre :
 2. Le FQDN HTTPS charge Streamlit et `/_stcore/health` répond.
 3. Le conteneur utilise l'image voulue, le port cible `8501`, l'identité `id-optiroute` et les
    variables Azure Blob indiquées plus haut.
-4. Le fichier monté `/app/.streamlit/secrets.toml` est syntaxiquement valide, sans afficher ses
+4. Le fichier `/app/.streamlit/secrets.toml`, copié depuis le volume au démarrage, est syntaxiquement valide, sans afficher ses
    valeurs, et le callback OIDC est exactement `https://<fqdn>/oauth2callback`.
 5. Une connexion de chaque rôle de test fournit le bon App Role ; l'ADMIN accède à l'administration,
    et ATC/RAG/DR ont un profil interne provisionné.

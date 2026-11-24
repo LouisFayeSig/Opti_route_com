@@ -185,3 +185,70 @@ def test_azure_partial_archive_is_retried_without_resurrecting_request(azure_ser
     service.store._container.before_delete = lambda name: None
     assert service.pending() == []
     assert len(service.recent()) == 1
+
+
+def test_azure_reclaim_retries_after_clients_are_renamed_but_profile_write_fails(azure_service):
+    import pandas as pd
+
+    from opti_route.data import standardize_clients
+
+    service = azure_service
+    clients = standardize_clients(pd.DataFrame({
+        "client_id": ["A"], "client_name": ["Alpha"], "salesperson_code": ["164"],
+        "salesperson": ["ATC Angers"], "address": ["1 rue du Test"], "postal_code": ["14000"], "city": ["Caen"],
+    }))
+    service.store.save_clients(clients, source_name="clients.xlsx", imported_by="test")
+    record = service.catalog.save(ADMIN, group="ATC", city="Angers", scope={"atc_code": "164", "atc_name": "ATC Angers"})
+    request = service.create(ADMIN, action="AJOUTER", group="ATC", nom="Dupont", prenom="Jean",
+                             scope={"atc_code": "164"}, catalog_id=record["id"], rename_clients=True)
+
+    def fail_profile(name, value):
+        if name.startswith("access-profiles/"):
+            raise ServiceRequestError("Simulated outage")
+
+    service.store._container.before_write = fail_profile
+    with pytest.raises(StorageError):
+        service.check(ADMIN, request["id"])
+    assert service.store.load_clients()[0].loc[0, "salesperson"] == "Dupont Jean"
+    assert service.store.load_access_profile(OID) is None
+    assert service.get(request["id"])["application"]["proof"] == "AD"
+    service.store._container.before_write = lambda name, value: None
+    assert service.pending() == []
+    assert service.store.load_access_profile(OID).atc_name == "Dupont Jean"
+    assert service.catalog.get(record["id"])["assigned_to"] == OID
+
+
+def test_azure_departure_cancellation_recovers_after_interrupted_archive(azure_service):
+    import pandas as pd
+
+    from opti_route.data import standardize_clients
+
+    service = azure_service
+    clients = standardize_clients(pd.DataFrame({
+        "client_id": ["A"], "client_name": ["Alpha"], "salesperson_code": ["164"],
+        "salesperson": ["Jean"], "address": ["1 rue du Test"], "postal_code": ["14000"], "city": ["Caen"],
+    }))
+    service.store.save_clients(clients, source_name="clients.xlsx", imported_by="test")
+    service.store.save_access_profile(UserAccessProfile(OID, "Jean", "atc", atc_code="164", atc_name="Jean"), updated_by="test")
+    request = service.create(ADMIN, action="SUPPRIMER", group="ATC", principal_id=OID, vacant_city="Angers")
+
+    def fail_cancelled(name, value):
+        if name.startswith("access-requests/pending/") and value.get("statut") == "ANNULEE":
+            raise ServiceRequestError("Simulated outage")
+
+    service.store._container.before_write = fail_cancelled
+    with pytest.raises(StorageError):
+        service.cancel(ADMIN, request["id"])
+    assert service.get(request["id"])["cancelling"]
+    service.store._container.before_write = lambda name, value: None
+    assert service.pending() == []
+    assert not service.blocked(OID)
+    assert service.store.load_clients()[0].loc[0, "salesperson"] == "Jean"
+    assert service.catalog.entries() == []
+
+
+def test_azure_rejects_oversized_documents_before_writing(azure_service, monkeypatch):
+    monkeypatch.setattr("opti_route.access_documents.MAX_DOCUMENT_BYTES", 32)
+    with pytest.raises(StorageError, match="volumineux"):
+        azure_service.documents.write("access-scopes/too-big.json", {"name": "x" * 40}, None)
+    assert azure_service.documents.read("access-scopes/too-big.json") == (None, None)
