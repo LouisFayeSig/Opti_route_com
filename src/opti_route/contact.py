@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from urllib.parse import quote, urlencode
 
-CONTACT_EMAIL = "l.faye@sigplc.fr"
+CONTACT_EMAIL = "SIG-ROBOTIT@sigplc.fr"
 ACCOUNT_ACTIONS = ("ajouter", "modifier", "supprimer")
 ACCOUNT_GROUPS = ("DR", "ATC", "ADMIN", "RAG")
 
 
-def contact_mailto(subject: str, body: str) -> str:
+def contact_mailto(subject: str, body: str, *, recipient: str = CONTACT_EMAIL) -> str:
+    if not recipient or any(character in recipient for character in "\r\n?#&"):
+        raise ValueError("Destinataire Helpdesk invalide.")
     body = body.replace("\r\n", "\n").replace("\n", "\r\n")
     query = urlencode({"subject": subject, "body": body}, quote_via=quote)
-    return f"mailto:{CONTACT_EMAIL}?{query}"
+    return f"mailto:{recipient}?{query}"
 
 
-def account_request_mailto(display_name: str, action: str, group: str) -> str:
+def account_request_mailto(display_name: str, action: str, group: str, *, recipient: str = CONTACT_EMAIL) -> str:
     display_name = " ".join(display_name.split())
     if not display_name:
         raise ValueError("Le nom et le prénom sont obligatoires.")
@@ -25,4 +27,5 @@ def account_request_mailto(display_name: str, action: str, group: str) -> str:
     return contact_mailto(
         f"Groupe AD {display_name} OptiRoute",
         f"J'aimerais {action} {display_name} {preposition} groupe {group}",
+        recipient=recipient,
     )

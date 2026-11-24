@@ -41,6 +41,7 @@ class AzureBlobAppStore:
         container_name: str,
         connection_string: str | None = None,
     ) -> None:
+        self._access_documents = None
         if not container_name.strip():
             raise StorageError("AZURE_STORAGE_CONTAINER est obligatoire.")
         try:
@@ -91,6 +92,14 @@ class AzureBlobAppStore:
         if not isinstance(document, dict):
             raise StorageError("Une donnée du stockage Azure est invalide.")
         return document
+
+    @property
+    def access_documents(self):
+        if self._access_documents is None:
+            from .access_documents import AzureBlobJsonStore
+
+            self._access_documents = AzureBlobJsonStore(self._container)
+        return self._access_documents
 
     def _write_document(self, blob_name: str, document: dict[str, object]) -> None:
         payload = json.dumps(
@@ -247,6 +256,16 @@ class AzureBlobAppStore:
         return profile
 
     def save_access_profile(
+        self, profile: UserAccessProfile, *, updated_by: str, access_request_id: str | None = None
+    ) -> UserAccessProfile:
+        from .access_documents import guard_profile_write
+
+        with self.access_documents.transaction():
+            guard_profile_write(self, profile.principal_id, access_request_id)
+            self.access_documents._renew()
+            return self._save_access_profile(profile, updated_by=updated_by)
+
+    def _save_access_profile(
         self, profile: UserAccessProfile, *, updated_by: str
     ) -> UserAccessProfile:
         profile = profile.validated()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,6 +49,8 @@ class Settings:
     azure_storage_account_url: str | None = None
     azure_storage_container: str = "opti-route-private"
     azure_storage_connection_string: str | None = None
+    flow_lecture_ad_url: str | None = field(default=None, repr=False)
+    helpdesk_email: str = "SIG-ROBOTIT@sigplc.fr"
 
     @property
     def azure_maps_enabled(self) -> bool:
@@ -306,4 +308,6 @@ def load_settings(
         azure_storage_connection_string=(
             azure_storage_connection_string if azure_storage_connection_string else None
         ),
+        flow_lecture_ad_url=(_configured_value("FLOW_LECTURE_AD_URL", secrets) or "").strip() or None,
+        helpdesk_email=(_configured_value("HELPDESK_EMAIL", secrets, "SIG-ROBOTIT@sigplc.fr") or "SIG-ROBOTIT@sigplc.fr").strip(),
     )

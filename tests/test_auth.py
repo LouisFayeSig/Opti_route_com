@@ -178,6 +178,15 @@ def test_entra_claims_recognize_dr_role() -> None:
     assert user.is_dr
 
 
+@pytest.mark.parametrize("iat,exp,expected", [(100, 200, (100, 200)), (None, 200, (None, None)), (200, 100, (None, None)), ("nan", 200, (None, None))])
+def test_entra_claim_times_only_allow_usable_login_proofs(iat, exp, expected):
+    user = authenticated_user_from_entra_claims({
+        "oid": "object-123", "tid": "tenant-1", "roles": ["D-FR-APP-OPTIROUTE-ATC"],
+        "iat": iat, "exp": exp,
+    }, _settings())
+    assert (user.issued_at, user.expires_at) == expected
+
+
 def test_entra_claims_fail_closed_without_a_known_role() -> None:
     with pytest.raises(AuthenticationError, match="Aucun role"):
         authenticated_user_from_entra_claims(

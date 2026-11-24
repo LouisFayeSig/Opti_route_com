@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import local
 from typing import Protocol
 
 import pandas as pd
@@ -213,6 +214,9 @@ def deserialize_portfolio(payload: str, metadata: PortfolioMetadata) -> pd.DataF
 
 
 class ApplicationStore(Protocol):
+    @property
+    def access_documents(self): ...
+
     def save_clients(
         self,
         clients: pd.DataFrame,
@@ -232,7 +236,7 @@ class ApplicationStore(Protocol):
     def load_access_profile(self, principal_id: str) -> UserAccessProfile | None: ...
 
     def save_access_profile(
-        self, profile: UserAccessProfile, *, updated_by: str
+        self, profile: UserAccessProfile, *, updated_by: str, access_request_id: str | None = None
     ) -> UserAccessProfile: ...
 
     def delete_access_profile(self, principal_id: str) -> bool: ...
@@ -247,6 +251,8 @@ class AppStore:
 
     def __init__(self, path: Path):
         self.path = path
+        self._access_local = local()
+        self._access_documents = None
         parent_was_created = not self.path.parent.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if parent_was_created:
@@ -270,12 +276,37 @@ class AppStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
+        existing = getattr(self._access_local, "connection", None)
+        if existing is not None:
+            yield existing
+            return
         connection = self._connect()
         try:
             with connection:
                 yield connection
         finally:
             connection.close()
+
+    @contextmanager
+    def access_transaction(self):
+        if getattr(self._access_local, "connection", None) is not None:
+            yield
+            return
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._access_local.connection = connection
+            try:
+                yield
+            finally:
+                self._access_local.connection = None
+
+    @property
+    def access_documents(self):
+        if self._access_documents is None:
+            from .access_documents import SQLiteJsonStore
+
+            self._access_documents = SQLiteJsonStore(self)
+        return self._access_documents
 
     def _initialize(self) -> None:
         try:
@@ -546,6 +577,16 @@ class AppStore:
         ).validated()
 
     def save_access_profile(
+        self, profile: UserAccessProfile, *, updated_by: str, access_request_id: str | None = None
+    ) -> UserAccessProfile:
+        from .access_documents import guard_profile_write
+
+        documents = self.access_documents
+        with documents.transaction():
+            guard_profile_write(self, profile.principal_id, access_request_id)
+            return self._save_access_profile(profile, updated_by=updated_by)
+
+    def _save_access_profile(
         self, profile: UserAccessProfile, *, updated_by: str
     ) -> UserAccessProfile:
         profile = profile.validated()

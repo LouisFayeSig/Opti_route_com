@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import sys
 from pathlib import Path
@@ -14,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from opti_route.access import AccessDeniedError, authorize_portfolio, rag_portfolio_overview
+from opti_route.access_admin import _check_created, render_access_requests
+from opti_route.access_requests import AccessRequests
 from opti_route.auth import (
     ROLE_ATC,
     ROLE_DR,
@@ -25,12 +28,6 @@ from opti_route.auth import (
 from opti_route.azure_maps import AzureMapsClient, AzureMapsError, GeocodeResult
 from opti_route.cache import GeocodeCache
 from opti_route.config import Settings, load_settings
-from opti_route.contact import (
-    ACCOUNT_ACTIONS,
-    ACCOUNT_GROUPS,
-    CONTACT_EMAIL,
-    account_request_mailto,
-)
 from opti_route.data import (
     ALIASES,
     ClientDataError,
@@ -44,9 +41,9 @@ from opti_route.data import (
     validate_uploaded_file,
 )
 from opti_route.exporting import google_maps_url, pdf_bytes
+from opti_route.flow_client import FlowClient
 from opti_route.geocoding import geocode_missing_clients
 from opti_route.ign_geocoding import IgnGeocodingClient, IgnGeocodingError
-from opti_route.telemetry import bind_session, reset_context, session_event
 from opti_route.importing import geocoded_workbook_bytes
 from opti_route.map_view import (
     portfolio_points_from_clients,
@@ -96,6 +93,7 @@ from opti_route.storage import (
     UserAccessProfile,
 )
 from opti_route.store_factory import create_app_store
+from opti_route.telemetry import bind_session, reset_context, session_event
 
 st.set_page_config(
     page_title="Opti Route Com",
@@ -143,6 +141,16 @@ settings = load_settings(PROJECT_ROOT, secrets=runtime_secrets)
 @st.cache_resource
 def _initialize_app_store(_settings: Settings) -> ApplicationStore:
     return create_app_store(_settings)
+
+
+@st.cache_resource
+def _initialize_flow_client(url: str) -> FlowClient:
+    return FlowClient(url)
+
+
+def _access_service(store, *, with_flow=False):
+    flow = _initialize_flow_client(settings.flow_lecture_ad_url) if with_flow and settings.flow_lecture_ad_url else None
+    return AccessRequests(store, flow)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -661,6 +669,11 @@ def _admin_import_panel(
                     ),
                 )
                 progress_bar.empty()
+            if provisioning_plan is not None:
+                from opti_route.access_documents import guard_profile_write
+
+                for candidate in provisioning_plan.candidates:
+                    guard_profile_write(store, candidate.profile.principal_id, None)
             store.save_clients(
                 enriched_clients,
                 source_name=uploaded.name,
@@ -808,6 +821,7 @@ def _admin_access_panel(
                     "UG DR": ", ".join(profile.ugs),
                     "Agences héritées": ", ".join(profile.agencies),
                     "Modifié le": profile.updated_at.replace("T", " "),
+                    "Accès actif": not _access_service(store).blocked(profile.principal_id),
                 }
                 for profile in profiles
             ]
@@ -990,24 +1004,21 @@ def _admin_access_panel(
         try:
             if manual_atc_scope and not (selected_atc_code and selected_atc_name):
                 raise StorageError("Le code ATC et le nom du commercial sont obligatoires.")
-            store.save_access_profile(
-                UserAccessProfile(
-                    principal_id=principal_id,
-                    display_name=display_name,
-                    role={"ATC": ROLE_ATC, "RAG": ROLE_RAG, "DR": ROLE_DR}[role_label],
-                    atc_code=selected_atc_code,
-                    atc_email=selected_atc_email,
-                    atc_name=selected_atc_name,
-                    rag_email=selected_rag_email,
-                    agencies=selected_agencies,
-                    ugs=selected_ugs,
-                ),
-                updated_by=user.display_name,
+            service = _access_service(store, with_flow=True)
+            existing = service.profile(principal_id)
+            request = service.create(
+                user, action="MODIFIER" if existing else "AJOUTER", group=role_label,
+                principal_id=principal_id, nom=display_name,
+                old_group=existing["role"].upper() if existing else None,
+                scope={"atc_code": selected_atc_code, "atc_email": selected_atc_email,
+                       "atc_name": selected_atc_name, "rag_email": selected_rag_email,
+                       "ugs": list(selected_ugs), "agencies": list(selected_agencies)},
             )
-        except StorageError as exc:
+            _check_created(service, user, request)
+        except (StorageError, ValueError, PermissionError) as exc:
             st.error(str(exc))
         else:
-            st.success("L'habilitation a été enregistrée.")
+            st.success("La modification du périmètre ou la demande d'accès a été enregistrée.")
             st.rerun()
 
     if profiles:
@@ -1031,12 +1042,15 @@ def _admin_access_panel(
                 key="delete_access_profile",
             ):
                 try:
-                    deleted = store.delete_access_profile(revoked_id)
-                except StorageError as exc:
+                    service = _access_service(store, with_flow=True)
+                    profile = profile_by_id[revoked_id]
+                    request = service.create(user, action="SUPPRIMER", group=profile.role.upper(),
+                                             principal_id=revoked_id, nom=profile.display_name)
+                    _check_created(service, user, request)
+                except (StorageError, ValueError, PermissionError) as exc:
                     st.error(str(exc))
                 else:
-                    if deleted:
-                        st.success("L'habilitation a été révoquée.")
+                    st.success("L'accès est désactivé et la demande de retrait est enregistrée.")
                     st.rerun()
 
 
@@ -1086,32 +1100,12 @@ def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> 
         st.caption(f"Identifiant de requête Azure : `{diagnostic.request_id}`")
 
 
-def _admin_account_request_panel() -> None:
-    st.caption(f"Destinataire : {CONTACT_EMAIL}")
-    display_name = " ".join(
-        st.text_input("Nom et prénom", key="admin_account_request_name").split()
-    )
-    action_column, group_column = st.columns(2)
-    action = action_column.selectbox(
-        "Type de demande",
-        ACCOUNT_ACTIONS,
-        format_func=str.capitalize,
-        key="admin_account_request_action",
-    )
-    group = group_column.selectbox(
-        "Groupe AD", ACCOUNT_GROUPS, key="admin_account_request_group"
-    )
-    if not display_name:
-        st.info("Renseignez le nom et le prénom pour préparer le brouillon.")
-        return
-    preposition = "du" if action == "supprimer" else "au"
-    st.text(f"Objet : Groupe AD {display_name} OptiRoute")
-    st.text(f"J'aimerais {action} {display_name} {preposition} groupe {group}")
-    st.link_button(
-        "Ouvrir le brouillon",
-        account_request_mailto(display_name, action, group),
-        use_container_width=True,
-    )
+def _admin_account_request_panel(store, user) -> None:
+    try:
+        service = _access_service(store, with_flow=True)
+        render_access_requests(service, user, settings.helpdesk_email)
+    except (StorageError, ValueError, PermissionError) as exc:
+        st.error(str(exc))
 
 
 def _render_admin_panel(
@@ -1131,7 +1125,8 @@ def _render_admin_panel(
                 "Demandes de groupe AD",
                 "Contraintes",
                 "Diagnostic Azure",
-            ]
+            ],
+            **({"key": "admin_navigation", "on_change": "rerun"} if "on_change" in inspect.signature(st.tabs).parameters else {}),
         )
         with portfolio_tab:
             _admin_import_panel(
@@ -1145,7 +1140,8 @@ def _render_admin_panel(
         with access_tab:
             _admin_access_panel(store, user, clients)
         with requests_tab:
-            _admin_account_request_panel()
+            if getattr(requests_tab, "open", None) is not False:
+                _admin_account_request_panel(store, user)
         with settings_tab:
             _admin_settings_panel(store, configuration)
         with diagnostic_tab:
@@ -1523,6 +1519,19 @@ try:
         store,
     )
 except StorageError as exc:
+    st.error(str(exc))
+    st.stop()
+
+try:
+    access_service = _access_service(store)
+    login_signature = (authenticated_user.principal_id, authenticated_user.role,
+                       authenticated_user.issued_at, authenticated_user.expires_at)
+    if st.session_state.get("access_login_checked") != login_signature:
+        access_service.on_login(authenticated_user)
+        st.session_state["access_login_checked"] = login_signature
+    access_service.ensure_session(authenticated_user)
+except (StorageError, ValueError, PermissionError) as exc:
+    st.session_state.pop("route_plan", None)
     st.error(str(exc))
     st.stop()
 

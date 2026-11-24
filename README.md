@@ -148,7 +148,7 @@ Après la première connexion de l'administrateur, les habilitations peuvent êt
 le portefeuille, depuis les exports Entra intégrés au classeur ou les Object ID déjà renseignés
 dans **Utilisateurs**. Les CSV séparés restent acceptés ; voir
 [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
-L'onglet **Administration → Habilitations** reste utile pour corriger ponctuellement un compte : il
+L'onglet **Administration → Habilitations** permet de préparer ou corriger un compte : il
 associe l'Object ID Entra (`oid`) de chaque ATC à son code ATC, chaque RAG à son e-mail N+1 et chaque
 DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'habilitation doivent
 correspondre ; une incohérence bloque l'accès. L'adresse e-mail sert à calculer le périmètre, mais
@@ -181,6 +181,29 @@ complet ou une nouvelle session peut demander les identifiants à nouveau.
 Sur mobile, une sélection de certificat demandée par `device.login.microsoftonline.com` correspond
 à l'identification de l'appareil par Entra. Le diagnostic et les contrôles à réaliser avec l'équipe
 Entra/Intune sont décrits dans [deployment/AUTH_MOBILE.md](deployment/AUTH_MOBILE.md).
+
+### Demandes de groupe AD et Power Automate
+
+**Administration → Demandes de groupe AD** enregistre les ajouts, changements de groupe et retraits.
+L'ajout ou le changement de groupe écrit le profil après confirmation du flux, ou lors d'une
+nouvelle connexion Entra portant exactement le rôle attendu et un jeton émis après la demande.
+Le formulaire **Habilitations** utilise le même circuit. Un changement de périmètre au sein du même
+groupe est appliqué directement et historisé, sans mail ni appel AD.
+
+Le retrait désactive immédiatement l'accès local, y compris pour ADMIN, sans supprimer le profil.
+Une session déjà ouverte est bloquée au prochain contrôle de l'application. Annuler le retrait ne
+réactive que l'accès désactivé par cette demande. Un changement de groupe confirmé bloque aussi
+une ancienne session qui porterait encore l'ancien rôle.
+
+Le brouillon Helpdesk conserve son objet et son corps habituels ; son destinataire est désormais
+`SIG-ROBOTIT@sigplc.fr`, configurable par `HELPDESK_EMAIL`. L'administrateur envoie le brouillon
+depuis sa messagerie. Le flux lit l'annuaire et ne modifie aucun groupe.
+
+Définir `FLOW_LECTURE_AD_URL` dans la configuration sécurisée du Container App. Sans URL, les
+demandes restent en attente et l'interface le signale. Les contrôles automatiques concernent
+seulement les demandes en attente, à l'ouverture de leur onglet, au plus une fois toutes les
+15 minutes pour l'ensemble des administrateurs. Aucun traitement ne s'exécute lorsque l'application
+n'est pas utilisée. Voir la [configuration et recette Azure](deployment/ACCESS_REQUESTS.md).
 
 ### Déploiement sur Streamlit Community Cloud
 

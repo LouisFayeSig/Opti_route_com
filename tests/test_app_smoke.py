@@ -10,9 +10,11 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from opti_route.access import AccessDeniedError, authorize_portfolio
+from opti_route.access_requests import AccessRequests
 from opti_route.auth import AuthenticatedUser
 from opti_route.azure_maps import GeocodeResult
 from opti_route.config import load_settings
+from opti_route.flow_client import ResultatFlux
 from opti_route.ign_geocoding import IgnGeocodingClient
 from opti_route.portfolio_view import (
     SCOPE_AGENCY,
@@ -22,6 +24,25 @@ from opti_route.portfolio_view import (
     SCOPE_REGION,
 )
 from opti_route.storage import AppStore, UserAccessProfile
+
+
+@pytest.fixture(autouse=True)
+def isolate_access_flow(monkeypatch):
+    monkeypatch.setenv("FLOW_LECTURE_AD_URL", "")
+    monkeypatch.setenv("HELPDESK_EMAIL", "SIG-ROBOTIT@sigplc.fr")
+
+
+@pytest.fixture
+def verified_flow(monkeypatch):
+    calls = []
+
+    def verifier(self, request):
+        calls.append(request)
+        return ResultatFlux(200, "APPLIQUEE", "Confirmé", request.get("objectId") or "11111111-1111-4111-8111-111111111111", {}, (), "test-run")
+
+    monkeypatch.setenv("FLOW_LECTURE_AD_URL", "https://flow.example.test")
+    monkeypatch.setattr("opti_route.flow_client.FlowClient.verifier", verifier)
+    return calls
 
 
 def _portfolio() -> pd.DataFrame:
@@ -417,16 +438,19 @@ def test_admin_account_can_access_portfolio_import(monkeypatch) -> None:
         assert any("Administrateur" in caption.value for caption in app.caption)
         assert len(app.file_uploader) == 1
         assert app.radio(key="access_atc_mode").value == "Saisie manuelle"
-        app.text_input(key="access_principal_id").input("oid-before-import")
+        oid = "11111111-1111-4111-8111-111111111111"
+        app.text_input(key="access_principal_id").input(oid)
         app.text_input(key="access_display_name").input("Nouveau collaborateur")
         app.text_input(key="access_atc_code").input("10-03-99")
         app.text_input(key="access_atc_name").input("Nouveau commercial")
         app.button(key="save_access_profile").click().run()
         assert not app.exception
-        profile = AppStore(storage_path).load_access_profile("oid-before-import")
-        assert profile is not None
-        assert profile.atc_code == "10-03-99"
-        assert profile.atc_name == "Nouveau commercial"
+        store = AppStore(storage_path)
+        assert store.load_access_profile(oid) is None
+        request = AccessRequests(store).pending()[0]
+        assert request["statut"] == "EN_ATTENTE"
+        assert request["scope"]["atc_code"] == "10-03-99"
+        assert request["scope"]["atc_name"] == "Nouveau commercial"
     finally:
         for suffix in ("", "-wal", "-shm"):
             storage_path.with_name(storage_path.name + suffix).unlink(missing_ok=True)
@@ -604,10 +628,11 @@ def test_worksite_uses_the_confirmed_address_and_invalidates_a_changed_query(
     assert len(searches) == 1
 
 
-def test_admin_can_prepare_and_update_an_atc_not_yet_in_the_portfolio(regional_app) -> None:
+def test_admin_can_prepare_and_update_an_atc_not_yet_in_the_portfolio(regional_app, verified_flow) -> None:
     app = regional_app("test-admin")
     app.radio(key="access_atc_mode").set_value("Saisie manuelle").run()
-    app.text_input(key="access_principal_id").input("oid-new-atc")
+    oid = "11111111-1111-4111-8111-111111111111"
+    app.text_input(key="access_principal_id").input(oid)
     app.text_input(key="access_display_name").input("Nouveau collaborateur")
     app.text_input(key="access_atc_code").input(" 99-01-004 ")
     app.run()
@@ -618,14 +643,14 @@ def test_admin_can_prepare_and_update_an_atc_not_yet_in_the_portfolio(regional_a
     app.button(key="save_access_profile").click().run()
     assert not app.exception
     store = AppStore(load_settings().app_storage_path)
-    profile = store.load_access_profile("oid-new-atc")
+    profile = store.load_access_profile(oid)
     assert profile is not None
     assert profile.atc_code == "99-01-004"
     assert profile.atc_name == "Nouveau commercial"
     assert profile.atc_email is None
 
     clients, _ = store.load_clients()
-    user = AuthenticatedUser("Nouveau collaborateur", "entra", "atc", "oid-new-atc")
+    user = AuthenticatedUser("Nouveau collaborateur", "entra", "atc", oid)
     with pytest.raises(AccessDeniedError, match="Aucun client"):
         authorize_portfolio(clients, user, profile)
 
@@ -643,13 +668,14 @@ def test_admin_can_prepare_and_update_an_atc_not_yet_in_the_portfolio(regional_a
     app.text_input(key="access_atc_email").input("OTHER@example.test")
     app.button(key="save_access_profile").click().run()
     assert not app.exception
-    updated = store.load_access_profile("oid-new-atc")
+    updated = store.load_access_profile(oid)
     assert (updated.atc_code, updated.atc_name, updated.atc_email) == (
         "99-01-005", "Autre commercial", "other@example.test",
     )
+    assert len(verified_flow) == 1  # Le changement de périmètre seul ne rappelle pas AD.
 
 
-def test_existing_commercial_selection_keeps_matching_code_name_and_email(regional_app) -> None:
+def test_existing_commercial_selection_keeps_matching_code_name_and_email(regional_app, verified_flow) -> None:
     app = regional_app("test-admin")
     assert app.radio(key="access_atc_mode").value == "Commercial existant"
     selector = app.selectbox(key="access_atc_scope")
@@ -657,12 +683,13 @@ def test_existing_commercial_selection_keeps_matching_code_name_and_email(region
         index for index, label in enumerate(selector.options) if "Sarah EDIR" in label
     )
     selector.select_index(option_index).run()
-    app.text_input(key="access_principal_id").input("oid-existing-atc")
+    oid = "11111111-1111-4111-8111-111111111111"
+    app.text_input(key="access_principal_id").input(oid)
     app.text_input(key="access_display_name").input("Sarah")
     app.button(key="save_access_profile").click().run()
 
     assert not app.exception
-    profile = AppStore(load_settings().app_storage_path).load_access_profile("oid-existing-atc")
+    profile = AppStore(load_settings().app_storage_path).load_access_profile(oid)
     assert (profile.atc_code, profile.atc_name, profile.atc_email) == (
         "20-01-001", "Sarah EDIR", "s.edir@litt.fr",
     )
@@ -742,7 +769,7 @@ def test_invalid_embedded_export_blocks_import_until_explicit_opt_out(regional_a
     assert not button.disabled
 
 
-def test_admin_can_see_which_portfolios_a_rag_will_receive(regional_app) -> None:
+def test_admin_can_see_which_portfolios_a_rag_will_receive(regional_app, verified_flow) -> None:
     app = regional_app("test-admin")
     app.radio(key="access_role").set_value("RAG").run()
     selector = app.selectbox(key="access_rag_scope")
@@ -751,13 +778,53 @@ def test_admin_can_see_which_portfolios_a_rag_will_receive(regional_app) -> None
     assert any("2 portefeuille(s) et 2 entreprise(s)" in item.value for item in app.caption)
     overviews = [item.value for item in app.dataframe if "Entreprises" in item.value.columns]
     assert any(set(frame["Commercial"]) == {"Sarah EDIR", "Meline TRILLAUD"} for frame in overviews)
-    app.text_input(key="access_principal_id").input("oid-rag-summary")
+    oid = "11111111-1111-4111-8111-111111111111"
+    app.text_input(key="access_principal_id").input(oid)
     app.text_input(key="access_display_name").input("RAG Summary")
     app.button(key="save_access_profile").click().run()
     assert not app.exception
     table = next(item.value for item in app.dataframe if "Périmètre RAG" in item.value.columns)
-    row = table.loc[table["Object ID Entra"].eq("oid-rag-summary")].iloc[0]
+    row = table.loc[table["Object ID Entra"].eq(oid)].iloc[0]
     assert row["Périmètre RAG"] == "2 portefeuille(s) · 2 entreprise(s)"
+
+
+def test_admin_requests_tab_creates_a_verified_profile_and_helpdesk_draft(regional_app, verified_flow):
+    app = regional_app("test-admin")
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    assert not app.exception
+    app.text_input(key="request_nom_new").input("Dupont")
+    app.text_input(key="request_prenom_new").input("Jean")
+    app.text_input(key="request_scope__ATC_code").input("31-02-004")
+    # AppTest ne sérialise pas encore le widget d'onglets dynamiques.
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.button(key="create_access_request").click().run()
+    assert not app.exception
+    assert len(verified_flow) == 1
+    service = AccessRequests(AppStore(load_settings().app_storage_path))
+    assert service.store.load_access_profile("11111111-1111-4111-8111-111111111111") is not None
+    assert service.recent()[0]["statut"] == "CONFIRMEE"
+    links = app.get("link_button")
+    assert any(item.proto.url.startswith("mailto:SIG-ROBOTIT@sigplc.fr?") for item in links)
+
+
+def test_disabled_admin_cannot_see_admin_controls_on_next_interaction(regional_app):
+    app = regional_app("test-admin")
+    service = AccessRequests(AppStore(load_settings().app_storage_path))
+    service._state("local:test-admin", {"enabled": False})
+    app.run()
+    assert not app.exception
+    assert any("désactivé" in item.value for item in app.error)
+    assert len(app.file_uploader) == 0
+    assert all(item.label != "⚙️ Administration" for item in app.expander)
+
+
+def test_non_admin_never_triggers_access_flow(regional_app, verified_flow):
+    app = regional_app("test-atc")
+    app.run()
+    assert not app.exception
+    assert verified_flow == []
+    assert all(tab.label != "Demandes de groupe AD" for tab in app.tabs)
 
 
 def test_atc_with_two_portfolios_can_choose_between_them(regional_app, monkeypatch) -> None:

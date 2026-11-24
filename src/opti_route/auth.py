@@ -41,6 +41,8 @@ class AuthenticatedUser:
     principal_id: str = ""
     principal_name: str = ""
     tenant_id: str = ""
+    issued_at: float | None = None
+    expires_at: float | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -115,6 +117,13 @@ def authenticated_user_from_entra_claims(
         claims.get("preferred_username") or claims.get("email") or claims.get("upn") or ""
     ).strip()
     display_name = str(claims.get("name") or principal_name or "Collaborateur").strip()
+    try:
+        issued_at = float(str(claims.get("iat")))
+        expires_at = float(str(claims.get("exp")))
+        if not math.isfinite(issued_at) or not math.isfinite(expires_at) or issued_at > expires_at:
+            issued_at, expires_at = None, None
+    except (TypeError, ValueError):
+        issued_at, expires_at = None, None
     return AuthenticatedUser(
         display_name=display_name,
         method="entra",
@@ -122,6 +131,8 @@ def authenticated_user_from_entra_claims(
         principal_id=principal_id,
         principal_name=principal_name,
         tenant_id=tenant_id,
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
 
 

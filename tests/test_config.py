@@ -7,6 +7,8 @@ import pytest
 from opti_route.config import load_settings
 
 CONFIG_VARIABLES = (
+    "FLOW_LECTURE_AD_URL",
+    "HELPDESK_EMAIL",
     "AUTH_MODE",
     "AUTH_USERNAME",
     "AUTH_PASSWORD",
@@ -31,6 +33,20 @@ CONFIG_VARIABLES = (
     "GEOCODING_AZURE_FALLBACK",
 )
 EMPTY_PROJECT_ROOT = Path("tests/.config-test-no-env")
+
+
+def test_flow_and_helpdesk_settings_prioritize_environment_and_hide_flow_url(monkeypatch):
+    monkeypatch.setenv("FLOW_LECTURE_AD_URL", "https://flow.example.test/PRIVATE_URL")
+    monkeypatch.setenv("HELPDESK_EMAIL", "agent@example.fr")
+    settings = load_settings(EMPTY_PROJECT_ROOT, secrets={"app": {"HELPDESK_EMAIL": "old@example.fr"}})
+    assert settings.flow_lecture_ad_url == "https://flow.example.test/PRIVATE_URL"
+    assert "PRIVATE_URL" not in repr(settings)
+    assert settings.helpdesk_email == "agent@example.fr"
+    monkeypatch.delenv("FLOW_LECTURE_AD_URL")
+    monkeypatch.delenv("HELPDESK_EMAIL")
+    defaults = load_settings(EMPTY_PROJECT_ROOT, secrets={})
+    assert defaults.flow_lecture_ad_url is None
+    assert defaults.helpdesk_email == "SIG-ROBOTIT@sigplc.fr"
 
 
 def test_settings_read_streamlit_app_secrets(monkeypatch) -> None:
