@@ -24,7 +24,7 @@ from .provisioning import (
     _split_ugs,
     _text,
 )
-from .storage import UserAccessProfile
+from .storage import StorageError, UserAccessProfile
 
 PREFIX = "access-scopes/"
 SCOPE_FIELDS = {
@@ -32,6 +32,8 @@ SCOPE_FIELDS = {
     "RAG": ("rag_email", "agencies"),
     "DR": ("ugs",),
 }
+BOOTSTRAP_KEY = "access-requests/scope-bootstrap.json"
+BOOTSTRAP_VERSION = 1
 
 
 def business_scope(group, profile):
@@ -120,6 +122,63 @@ def unassigned_from_users(users, clients=None):
             "origin": "Utilisateurs",
         }
     return list(records.values())
+
+
+def unassigned_from_existing_clients(clients):
+    """Retrouve seulement les libellés métier explicites quand Utilisateurs a été perdu."""
+    if clients is None or clients.empty:
+        return []
+    rows = []
+    for group, name_column, email_column in (
+        ("ATC", "salesperson", "salesperson_email"),
+        ("RAG", "rag_name", "rag_email"),
+        ("DR", "dr_name", "dr_email"),
+    ):
+        names = clients.get(name_column, pd.Series("", index=clients.index)).map(_text)
+        explicit = names.str.fullmatch(rf"{group}(?:[\s_-]+\S.*|[0-9].*)", case=False, na=False)
+        selected = clients.loc[explicit].copy()
+        if selected.empty:
+            continue
+        selected["_alias"] = names.loc[explicit].str.replace(r"\s+", " ", regex=True)
+        if group == "DR":
+            for name, region in selected.groupby("_alias", sort=False):
+                ugs = sorted({_text(value) for value in region.get("ug", []) if _text(value)})
+                rows.append(
+                    {"Role Entra": group, "Nom affiche": name, "Code Region": "-".join(ugs)}
+                )
+        else:
+            for _, row in selected.drop_duplicates(
+                subset=["_alias", "salesperson_code"] if group == "ATC" else ["_alias", "rag_email"]
+            ).iterrows():
+                rows.append(
+                    {
+                        "Role Entra": group,
+                        "Nom affiche": row["_alias"],
+                        "Code ATC": _text(row.get("salesperson_code")) if group == "ATC" else "",
+                        "UPN ou e-mail": _text(row.get(email_column)),
+                    }
+                )
+    return unassigned_from_users(pd.DataFrame(rows), clients) if rows else []
+
+
+def _same_scope(first, second):
+    if (
+        first["group"] != second["group"]
+        or first["display_name"].casefold() != second["display_name"].casefold()
+    ):
+        return False
+    group = first["group"]
+    if group == "ATC":
+        return (
+            _text(first["scope"].get("atc_code")).casefold()
+            == _text(second["scope"].get("atc_code")).casefold()
+        )
+    if group == "RAG":
+        return (
+            _text(first["scope"].get("rag_email")).casefold()
+            == _text(second["scope"].get("rag_email")).casefold()
+        )
+    return set(first["scope"].get("ugs") or ()) == set(second["scope"].get("ugs") or ())
 
 
 def _fingerprint(frame, columns):
@@ -300,6 +359,82 @@ class ScopeCatalog:
                 if self.get(record["id"]) is None:
                     self.put({**record, "available": True, "updated_at": self.clock().isoformat()})
         return len(records)
+
+    def bootstrap_existing(self, actor, *, portfolio_digest=None):
+        """Migration au premier accès admin ; aucun compte ni appel AD n'est créé."""
+        self.authorize(actor)
+        marker, _ = self.documents.read(BOOTSTRAP_KEY)
+
+        def completed(digest):
+            return (
+                marker
+                and marker.get("version") == BOOTSTRAP_VERSION
+                and marker.get("portfolio_digest") == digest
+            )
+
+        if portfolio_digest and completed(portfolio_digest):
+            return marker
+        with self.documents.transaction():
+            self.authorize(actor)
+            clients, metadata = self.store.load_clients()
+            if clients is None or metadata is None:
+                return None
+            marker, etag = self.documents.read(BOOTSTRAP_KEY)
+            if completed(metadata.digest):
+                return marker
+            records = unassigned_from_existing_clients(clients)
+            known_ids = {group: set() for group in SCOPE_FIELDS}
+            known_names = {group: set() for group in SCOPE_FIELDS}
+            if records:
+                for profile in self.store.list_access_profiles():
+                    group = profile.role.upper()
+                    if group not in known_ids:
+                        continue
+                    known_names[group].update(
+                        _text(value).casefold()
+                        for value in (profile.display_name, profile.atc_name)
+                        if _text(value)
+                    )
+                    matched = scope_clients(clients, group, business_scope(group, profile))
+                    known_ids[group].update(
+                        matched.get("client_id", pd.Series(dtype=str)).astype(str)
+                    )
+            existing = [self.documents.read(key)[0] for key in self.documents.keys(PREFIX)]
+            existing = [value for value in existing if value]
+            created = skipped = 0
+            for record in records:
+                if any(_same_scope(record, previous) for previous in existing):
+                    continue
+                try:
+                    matched = scope_clients(clients, record["group"], record["scope"])
+                    ids = set(matched.get("client_id", pd.Series(dtype=str)).astype(str))
+                except StorageError:
+                    ids = set()
+                if (
+                    ids & known_ids[record["group"]]
+                    or record["display_name"].casefold() in known_names[record["group"]]
+                ):
+                    skipped += 1
+                    continue
+                self.put(
+                    {
+                        **record,
+                        "origin": "Portefeuille existant",
+                        "available": True,
+                        "updated_at": self.clock().isoformat(),
+                    }
+                )
+                created += 1
+            marker = {
+                "version": BOOTSTRAP_VERSION,
+                "portfolio_digest": metadata.digest,
+                "detected": len(records),
+                "created": created,
+                "known_accounts_excluded": skipped,
+                "completed_at": self.clock().isoformat(),
+            }
+            self.documents.write(BOOTSTRAP_KEY, marker, etag)
+            return marker
 
     def save(self, actor, *, group, city, scope, identity=None):
         self.authorize(actor)

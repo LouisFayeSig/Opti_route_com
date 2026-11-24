@@ -11,7 +11,11 @@ from opti_route.access_requests import AccessRequests
 from opti_route.auth import AuthenticatedUser
 from opti_route.data import standardize_clients
 from opti_route.flow_client import ResultatFlux, build_flow_payload
-from opti_route.scope_catalog import business_scope, unassigned_from_users
+from opti_route.scope_catalog import (
+    business_scope,
+    unassigned_from_existing_clients,
+    unassigned_from_users,
+)
 from opti_route.storage import AppStore, StorageError, UserAccessProfile
 
 OID = "11111111-1111-4111-8111-111111111111"
@@ -313,3 +317,85 @@ def test_sqlite_rejects_oversized_documents_before_writing(service, monkeypatch)
     with pytest.raises(StorageError, match="volumineux"):
         service.documents.write("access-scopes/too-big.json", {"name": "x" * 40}, None)
     assert service.documents.read("access-scopes/too-big.json") == (None, None)
+
+
+def test_bootstrap_migrates_existing_role_city_labels_without_an_import_or_ad_call(service):
+    before = service.store.load_clients()[1]
+    report = service.catalog.bootstrap_existing(ADMIN)
+    assert report["created"] == 2
+    assert {record["display_name"] for record in service.catalog.entries()} == {
+        "ATC Bordeaux",
+        "RAG Lyon",
+    }
+    assert service.store.list_access_profiles() == []
+    assert service.store.load_clients()[1] == before
+    assert service.flow.calls == []
+    fresh_session = AccessRequests(service.store, service.flow)
+    assert fresh_session.catalog.bootstrap_existing(ADMIN, portfolio_digest=before.digest) == report
+    assert len(fresh_session.catalog.entries()) == 2
+
+
+def test_bootstrap_excludes_known_object_ids_and_normal_people_and_admin_labels(service):
+    service.store.save_access_profile(
+        UserAccessProfile(OID, "Jean", "atc", atc_code="164", atc_name="ATC Bordeaux"),
+        updated_by="test",
+    )
+    report = service.catalog.bootstrap_existing(ADMIN)
+    assert report["known_accounts_excluded"] == 1
+    assert {record["display_name"] for record in service.catalog.entries()} == {"RAG Lyon"}
+    data = clients()
+    data["salesperson"] = ["Jean Dupont", "ADMIN Paris", "ATC164"]
+    records = unassigned_from_existing_clients(data)
+    assert {record["display_name"] for record in records if record["group"] == "ATC"} == {"ATC164"}
+    assert all(record["group"] != "ADMIN" for record in records)
+
+
+def test_bootstrap_finds_dr_regions_and_keeps_rag_placeholders_with_missing_email(service):
+    data = clients()
+    data["dr_name"] = ["DR Nantes", "DR Nantes", "Autre DR"]
+    data["rag_email"] = ""
+    service.store.save_clients(data, source_name="clients.xlsx", imported_by="test")
+    service.catalog.bootstrap_existing(ADMIN)
+    records = service.catalog.entries()
+    assert next(record for record in records if record["group"] == "DR")["scope"]["ugs"] == ["20"]
+    assert (
+        next(record for record in records if record["group"] == "RAG")["scope"]["rag_email"] == ""
+    )
+
+
+def test_bootstrap_preserves_catalog_decisions_and_never_reopens_an_assigned_placeholder(service):
+    imported = entry(service)
+    service.catalog.put({**imported, "available": False, "assigned_to": OID})
+    service.catalog.bootstrap_existing(ADMIN)
+    assert len([record for record in service.catalog.entries() if record["group"] == "ATC"]) == 1
+    assert service.catalog.get(imported["id"])["available"] is False
+    assert service.catalog.get(imported["id"])["assigned_to"] == OID
+
+
+def test_bootstrap_only_runs_for_enabled_admins(service):
+    with pytest.raises(PermissionError):
+        service.catalog.bootstrap_existing(AuthenticatedUser("Jean", "entra", "atc", OID))
+    service._state(ADMIN.principal_id, {"enabled": False})
+    with pytest.raises(PermissionError):
+        service.catalog.bootstrap_existing(ADMIN)
+
+
+def test_bootstrap_cached_marker_avoids_rescanning_profiles_until_the_portfolio_changes(
+    service, monkeypatch
+):
+    report = service.catalog.bootstrap_existing(ADMIN)
+    digest = service.store.load_clients()[1].digest
+    scan = service.store.list_access_profiles
+    monkeypatch.setattr(
+        service.store,
+        "list_access_profiles",
+        lambda: (_ for _ in ()).throw(AssertionError("Unnecessary profile scan")),
+    )
+    assert service.catalog.bootstrap_existing(ADMIN, portfolio_digest=digest) == report
+    monkeypatch.setattr(service.store, "list_access_profiles", scan)
+    data = clients()
+    data.loc[2, "salesperson"] = "ATC164"
+    service.store.save_clients(data, source_name="clients.xlsx", imported_by="test")
+    updated = service.catalog.bootstrap_existing(ADMIN)
+    assert updated["created"] == 1
+    assert len(service.catalog.entries()) == 3

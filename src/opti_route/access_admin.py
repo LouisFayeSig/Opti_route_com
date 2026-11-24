@@ -87,7 +87,8 @@ def render_scope_catalog(service, user):
         if rows:
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
         else:
-            st.caption("Aucun prête-nom conservé. Importez la feuille Utilisateurs ou créez un périmètre ci-dessous.")
+            st.caption("Aucun prête-nom identifiable dans les données chargées. La détection est automatique ; la feuille Utilisateurs permet de compléter le catalogue si nécessaire.")
+        st.caption("Règle automatique : ATC, RAG ou DR sans Object ID ; ADMIN est exclu. Les anciens libellés explicites comme ATC Angers ou ATC164 sont récupérés à l'ouverture de l'administration.")
         st.caption("Un prête-nom n'a aucun accès de connexion. Un départ peut renommer les affectations clients ; une reprise les renomme après confirmation des droits.")
         st.caption("Les affectations sont modifiées dans le portefeuille de l'application. Téléchargez sa sauvegarde à jour dans l'onglet Portefeuille d'entreprises pour conserver ces changements avant un prochain import.")
         if st.checkbox("Importer les prête-noms depuis un classeur Excel", key="scope_catalog_import"):

@@ -1154,6 +1154,13 @@ def _render_admin_panel(
     ign_geocoding_client: IgnGeocodingClient,
     azure_client: AzureMapsClient | None,
 ) -> None:
+    try:
+        _access_service(store).catalog.bootstrap_existing(user, portfolio_digest=metadata.digest if metadata else None)
+    except PermissionError as exc:
+        st.error(str(exc))
+        st.stop()
+    except (StorageError, ValueError) as exc:
+        st.warning(f"La détection des prête-noms du portefeuille existant n'a pas abouti : {exc}")
     with st.expander("⚙️ Administration", expanded=clients is None):
         portfolio_tab, access_tab, requests_tab, settings_tab, diagnostic_tab = st.tabs(
             [

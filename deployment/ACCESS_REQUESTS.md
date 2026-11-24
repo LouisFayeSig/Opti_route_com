@@ -56,9 +56,26 @@ invite à utiliser **Modifier**. Annuler un retrait ne réactive pas un profil d
 Les lignes **Utilisateurs** sans Object ID des populations ATC, RAG et DR sont conservées dans un
 catalogue distinct. Elles ne créent aucun compte, aucun Object ID fictif et aucun droit de connexion.
 Le catalogue est alimenté lors de l'import du portefeuille, même si l'option de provisionnement des
-comptes est désactivée. Pour un portefeuille déjà importé avant cette évolution, utiliser
-**Habilitations → Prête-noms et périmètres sans compte Entra → Importer les prête-noms depuis un
-classeur Excel** : cela lit uniquement Utilisateurs et ne réimporte pas les clients.
+comptes est désactivée. La règle porte sur le rôle ATC/RAG/DR et l'absence d'Object ID, indépendamment
+du libellé du prête-nom ; les lignes ADMIN sont toujours exclues.
+
+Après déploiement, **la première ouverture de l'administration migre aussi le portefeuille déjà
+chargé**, sans dépôt de fichier ni appel au flux AD. Elle retrouve les libellés explicites de rôle
+et ville/repère encore présents dans les données normalisées : ATC Angers, ATC164, RAG Bordeaux,
+DR Nantes. Les périmètres associés à des Object ID connus sont exclus, même si les comptes sont
+désactivés ; les personnes sans habilitation ne sont pas classées automatiquement sur la seule
+absence de profil. Le catalogue existant, les reprises et les annulations sont préservés.
+
+Un marqueur versionné `access-requests/scope-bootstrap.json` rend cette migration idempotente entre
+réplicas et sessions. Un portefeuille inchangé n'est pas rescanné à chaque affichage ; une nouvelle
+version des données réévalue les libellés. La migration ne modifie ni les affectations ni les droits.
+
+**Limite de reprise historique :** l'ancien import ne conservait pas la feuille Utilisateurs. Si un
+prête-nom, son rôle ou son périmètre n'existe plus dans les données normalisées (notamment les anciens
+DR sans champ de nom), la règle exacte ne peut pas être recalculée sans cette feuille. Dans ce cas,
+utiliser **Habilitations → Prête-noms et périmètres sans compte Entra → Importer les prête-noms depuis
+un classeur Excel** : un seul dépôt récupère toutes les lignes concernées, sans saisie individuelle
+et sans réimporter les clients.
 
 Le même panneau permet de créer ou compléter un périmètre sans compte. Le libellé est formé du
 rôle et de la ville ou du repère : **ATC Angers**, **RAG Bordeaux**, **DR Nantes**, ou **ATC 164**.

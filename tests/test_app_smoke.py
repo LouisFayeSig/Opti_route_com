@@ -932,6 +932,22 @@ def test_admin_backup_uses_current_storage_even_if_the_screen_had_cached_clients
     assert "Télécharger la sauvegarde complète (.zip)" in labels
 
 
+def test_first_admin_visit_detects_existing_placeholders_without_upload_or_manual_entry(regional_app):
+    store = AppStore(load_settings().app_storage_path)
+    clients, _ = store.load_clients()
+    clients.loc[0, "salesperson"] = "ATC164"
+    store.save_clients(clients, source_name="clients.xlsx", imported_by="test")
+    app = regional_app("test-admin")
+    assert not app.exception
+    service = AccessRequests(store)
+    assert service.catalog.entries()[0]["display_name"] == "ATC164"
+    app.run()
+    assert len(service.catalog.entries()) == 1
+    app.session_state["admin_navigation"] = "Demandes de groupe AD"
+    app.run()
+    assert "ATC164" in app.selectbox(key="request_catalog_AJOUTER__ATC").options
+
+
 def test_non_admin_never_triggers_access_flow(regional_app, verified_flow):
     app = regional_app("test-atc")
     app.run()

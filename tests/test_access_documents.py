@@ -252,3 +252,31 @@ def test_azure_rejects_oversized_documents_before_writing(azure_service, monkeyp
     with pytest.raises(StorageError, match="volumineux"):
         azure_service.documents.write("access-scopes/too-big.json", {"name": "x" * 40}, None)
     assert azure_service.documents.read("access-scopes/too-big.json") == (None, None)
+
+
+def test_azure_bootstrap_retries_after_partial_migration_without_creating_duplicates(azure_service):
+    import pandas as pd
+
+    from opti_route.data import standardize_clients
+    from opti_route.scope_catalog import BOOTSTRAP_KEY
+
+    service = azure_service
+    portfolio = standardize_clients(pd.DataFrame({
+        "client_id": ["A"], "client_name": ["Alpha"], "salesperson_code": ["164"],
+        "salesperson": ["ATC164"], "address": ["1 rue du Test"], "postal_code": ["14000"], "city": ["Caen"],
+    }))
+    service.store.save_clients(portfolio, source_name="clients.xlsx", imported_by="test")
+
+    def fail_marker(name, value):
+        if name == BOOTSTRAP_KEY:
+            raise ServiceRequestError("Simulated outage")
+
+    service.store._container.before_write = fail_marker
+    with pytest.raises(StorageError):
+        service.catalog.bootstrap_existing(ADMIN)
+    assert len(service.catalog.entries()) == 1
+    service.store._container.before_write = lambda name, value: None
+    service.catalog.bootstrap_existing(ADMIN)
+    assert len(service.catalog.entries()) == 1
+    assert service.catalog.entries()[0]["display_name"] == "ATC164"
+    assert service.store.list_access_profiles() == []
