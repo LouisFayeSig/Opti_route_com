@@ -866,7 +866,7 @@ def _render_admin_panel(
         repaired = _access_service(store).operations.repair_catalog(user)
         if repaired:
             _load_persistent_app_state.clear()
-            st.session_state["scope_repair_notice"] = f"Listing client r?concili? : {repaired} affectations corrig?es. Pr?parez une nouvelle sauvegarde."
+            st.session_state["scope_repair_notice"] = f"Listing client réconcilié : {repaired} affectations corrigées. Préparez une nouvelle sauvegarde."
             st.rerun()
         if notice := st.session_state.pop("scope_repair_notice", None):
             st.success(notice)
