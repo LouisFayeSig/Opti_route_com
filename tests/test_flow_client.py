@@ -137,6 +137,34 @@ def test_json_encoded_people_are_decoded_and_resolved_oid_must_match():
         client(Session(response())).verifier({**REQUEST, "objectId": "22222222-2222-4222-8222-222222222222"})
 
 
+@pytest.mark.parametrize("action", ["AJOUTER", "MODIFIER", "SUPPRIMER"])
+@pytest.mark.parametrize("person", [None, "null"])
+def test_applied_response_with_known_oid_accepts_absent_optional_user(action, person):
+    request = {**REQUEST, "action": action, "objectId": OID, "ancienGroupe": "RAG"}
+    session = Session(response(action=action, utilisateur=person))
+    result = client(session).verifier(request)
+    assert result.statut == "APPLIQUEE"
+    assert result.object_id == OID
+    assert result.utilisateur == {}
+    assert result.candidats == ()
+
+
+@pytest.mark.parametrize("changes", [
+    {"demandeId": "b" * 32}, {"version": 1}, {"action": "SUPPRIMER"},
+    {"groupe": "ADMIN"}, {"objectId": None},
+    {"objectId": "22222222-2222-4222-8222-222222222222"},
+])
+def test_null_optional_user_never_replaces_identity_or_correlation_checks(changes):
+    with pytest.raises(AdUnavailable):
+        client(Session(response(utilisateur=None, **changes))).verifier({**REQUEST, "objectId": OID})
+
+
+@pytest.mark.parametrize("person", [[], False, 0, "", "[]", "false", "0"])
+def test_invalid_optional_user_types_remain_rejected(person):
+    with pytest.raises(AdUnavailable):
+        client(Session(response(utilisateur=person))).verifier({**REQUEST, "objectId": OID})
+
+
 def test_token_scope_caching_and_early_renewal():
     session = Session(response())
     credential = Credential()

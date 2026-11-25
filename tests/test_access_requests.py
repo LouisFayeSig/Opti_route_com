@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from opti_route.access_documents import StorageConflict
 from opti_route.access_requests import AccessRequests
 from opti_route.auth import AuthenticatedUser
-from opti_route.flow_client import AdUnavailable, ResultatFlux
+from opti_route.flow_client import AdUnavailable, FlowClient, ResultatFlux
 from opti_route.storage import AppStore, UserAccessProfile
 
 OID = "11111111-1111-4111-8111-111111111111"
@@ -65,6 +66,37 @@ def test_add_is_pending_until_proof_then_persisted_and_archived(service):
     assert service.recent()[0]["id"] == request["id"]
     service.check(ADMIN, request["id"])
     assert len(service.flow.calls) == 1
+
+
+def test_flow_resolves_name_then_confirms_known_oid_with_null_user(service):
+    calls = []
+
+    def post(url, **kwargs):
+        payload = kwargs["json"]
+        calls.append(payload)
+        body = {**{key: payload[key] for key in ("version", "demandeId", "action", "groupe")},
+                "objectId": OID, "statut": "EN_ATTENTE" if len(calls) == 1 else "APPLIQUEE",
+                "motif": "Pas encore membre du groupe" if len(calls) == 1 else "Membre du groupe",
+                "utilisateur": {"objectId": OID, "displayName": "Jean Dupont"} if len(calls) == 1 else None,
+                "candidats": [], "execution": f"run-{len(calls)}"}
+        return SimpleNamespace(status_code=200, json=lambda: body)
+
+    credential = SimpleNamespace(get_token=lambda scope: SimpleNamespace(token="test-token", expires_on=4102444800))
+    service.flow = FlowClient("https://flow.example.test", credential=credential, session=SimpleNamespace(post=post))
+    request = create(service)
+    first = service.check(ADMIN, request["id"])
+    assert first["statut"] == "EN_ATTENTE"
+    assert first["objectId"] == OID
+    assert service.store.load_access_profile(OID) is None
+    second = service.check(ADMIN, request["id"])
+    assert calls[1]["objectId"] == OID
+    assert "nom" not in calls[1] and "prenom" not in calls[1]
+    assert second["statut"] == "CONFIRMEE"
+    assert second["resolved_by"] == "AD"
+    assert second["dernierControle"]["statutFlux"] == "APPLIQUEE"
+    assert service.store.load_access_profile(OID).atc_code == "31-02-004"
+    assert service.get(request["id"]) is None
+    assert service.recent()[0]["statut"] == "CONFIRMEE"
 
 
 @pytest.mark.parametrize("code", ["53-01-03", "31-02-004", "legacy-code"])

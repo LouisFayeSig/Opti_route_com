@@ -75,9 +75,11 @@ class ResultatFlux:
     execution: str
 
 
-def _json_field(value: object, expected: type):
+def _json_field(value: object, expected: type, *, nullable: bool = False):
     if isinstance(value, str):
         value = json.loads(value)
+    if value is None and nullable:
+        return expected()
     if not isinstance(value, expected):
         raise TypeError("Format inattendu.")
     return value
@@ -107,7 +109,9 @@ def parse_flow_result(document: object, payload: Mapping) -> ResultatFlux:
         if status not in SUCCESS_STATUSES:
             raise ValueError("Statut inconnu.")
         principal_id = object_id(document["objectId"]) if document.get("objectId") else None
-        person = _person(_json_field(document.get("utilisateur", {}), dict))
+        # Le flux renvoie null lors d'un contrôle par Object ID déjà résolu.
+        # La preuve reste portée par objectId et les champs de corrélation.
+        person = _person(_json_field(document.get("utilisateur", {}), dict, nullable=True))
         candidates = _json_field(document.get("candidats", []), list)
         if len(candidates) > 10:
             raise ValueError("Trop de candidats.")

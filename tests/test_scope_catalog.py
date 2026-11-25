@@ -10,7 +10,7 @@ from opti_route.access_documents import StorageConflict
 from opti_route.access_requests import AccessRequests
 from opti_route.auth import AuthenticatedUser
 from opti_route.data import standardize_clients
-from opti_route.flow_client import ResultatFlux, build_flow_payload
+from opti_route.flow_client import FlowClient, ResultatFlux, build_flow_payload
 from opti_route.scope_catalog import (
     business_scope,
     unassigned_from_existing_clients,
@@ -178,6 +178,28 @@ def test_reclaim_renames_only_selected_clients_after_ad_proof(service, group, fi
     assert authorized.clients["client_id"].tolist() == ["A", "B"]
     service.check(ADMIN, request["id"])
     assert len(service.flow.calls) == 1
+
+
+def test_reclaim_with_known_oid_and_null_user_response_applies_clients_and_profile(service):
+    record = entry(service)
+    request = add(service, record, principal_id=OID)
+
+    def post(url, **kwargs):
+        payload = kwargs["json"]
+        assert payload["objectId"] == OID
+        body = {**{key: payload[key] for key in ("version", "demandeId", "action", "groupe")},
+                "statut": "APPLIQUEE", "motif": "Membre du groupe", "objectId": OID,
+                "utilisateur": None, "candidats": [], "execution": "run-test"}
+        return SimpleNamespace(status_code=200, json=lambda: body)
+
+    credential = SimpleNamespace(get_token=lambda scope: SimpleNamespace(token="test-token", expires_on=4102444800))
+    service.flow = FlowClient("https://flow.example.test", credential=credential, session=SimpleNamespace(post=post))
+    checked = service.check(ADMIN, request["id"])
+    assert checked["statut"] == "CONFIRMEE"
+    assert service.store.load_clients()[0].loc[:1, "salesperson"].eq("Dupont Jean").all()
+    assert service.store.load_clients()[0].loc[2, "salesperson"] == "Autre ATC"
+    assert service.store.load_access_profile(OID).atc_email == "jean@example.test"
+    assert service.catalog.get(record["id"])["assigned_to"] == OID
 
 
 def test_same_group_reclaim_for_an_existing_account_is_direct_without_ad(service):

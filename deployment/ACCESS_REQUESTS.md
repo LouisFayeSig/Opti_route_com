@@ -26,6 +26,19 @@ avant expiration. POST synchrone, timeout de 110 secondes, sans redirection ni n
 automatique. Seuls identité, action, groupe et identifiant de demande sont envoyés ; aucun code de
 périmètre ne quitte l'application pour le flux.
 
+La réponse HTTP 200 contient directement le JSON du résultat : `version: 2`, le même `demandeId`,
+la même `action`, le même `groupe`, un `statut` reconnu et l'`objectId` du compte vérifié. Pour une
+confirmation `APPLIQUEE`, l'Object ID est obligatoire et doit correspondre à celui de la demande
+s'il est déjà connu. L'enveloppe `statusCode / headers / body` visible dans l'action Réponse de
+Power Automate ne doit pas être ajoutée au contenu JSON du corps HTTP.
+
+`utilisateur` est facultatif : absent, `{}` ou `null` (également sous forme de texte JSON) signifie
+qu'aucune fiche supplémentaire n'est fournie. C'est notamment le cas lors d'une vérification par
+Object ID après résolution du nom. Un objet rempli doit contenir le même Object ID que le résultat.
+`candidats` est un tableau, normalement `[]` en l'absence de candidats ; `execution` identifie le run.
+Le statut `APPLIQUEE` confirme les ajouts/changements et clôture les retraits lorsque le reste du
+résultat est cohérent ; une erreur technique laisse la demande en attente.
+
 ## Parcours administrateur
 
 1. Dans **Administration → Demandes de groupe AD**, saisir une demande. Pour un ajout, nom et prénom
@@ -174,6 +187,22 @@ sa prochaine interaction est refusée. Après un changement confirmé, une sessi
 l'ancien rôle est bloquée et demande une reconnexion Microsoft, y compris pour un ancien ADMIN.
 
 ## Stockage et concurrence
+
+Une nouvelle release conserve les demandes en cours si `APP_STORAGE_BACKEND=azure_blob` et si le
+compte et le conteneur de stockage restent les mêmes. Le workflow de déploiement change l'image ;
+il ne supprime pas les blobs des demandes, profils ou portefeuilles. Une session navigateur peut
+devoir être rechargée, puis une demande existante peut être vérifiée à nouveau, sans la recréer.
+Un SQLite placé dans le système de fichiers éphémère du conteneur ne fournit pas cette garantie.
+
+Les modifications sont enregistrées au fil des opérations et les demandes ont un historique.
+Les plans de renommage conservent les valeurs avant/après pour leur reprise ou annulation.
+**La sauvegarde complète Excel/ZIP est déclenchée manuellement** par Préparer la sauvegarde à jour :
+il n'existe pas encore de copie complète automatique avant chaque modification ou chaque release.
+
+Le compteur **Clients prévus pour le renommage** décrit le plan préparé à l'enregistrement, y
+compris quand la demande est encore en attente. Zéro signifie qu'aucun plan de renommage de clients
+n'est enregistré (option non cochée ou aucun client retrouvé). Ce chiffre ne mesure ni l'adhésion
+au groupe AD, ni à lui seul l'accès effectif du nouveau profil à son périmètre.
 
 Les formats des profils et imports existants sont conservés :
 

@@ -134,7 +134,7 @@ def _summary(request):
         "Statut": request["statut"], "Créée le": request["created_at"],
         "Dernier contrôle": control.get("date", ""), "Résultat": control.get("motif", ""),
         "Prête-nom": request.get("vacancy", {}).get("name") or request.get("catalog_name", ""),
-        "Clients réaffectés": str((request.get("portfolio_change") or request.get("vacancy", {}).get("change") or {}).get("client_count", 0)),
+        "Clients prévus pour le renommage": str((request.get("portfolio_change") or request.get("vacancy", {}).get("change") or {}).get("client_count", 0)),
     }
 
 
