@@ -3,6 +3,46 @@
 Le flux fourni vérifie une seule demande par appel, en lecture seule. Le Helpdesk conserve
 la gestion des groupes AD et sa procédure GLPI. L'application ne reçoit aucun droit d'écriture AD.
 
+## Mémo administrateur
+
+### Départ d'un ATC : conserver son portefeuille sous un prête-nom
+
+1. Ouvrir **Administration → Demandes de groupe AD**.
+2. Choisir **Action → Supprimer**, puis sélectionner l'ATC dans **Compte concerné**.
+3. Cocher **Conserver le portefeuille sous un prête-nom**.
+4. Dans **Ville du prête-nom**, saisir uniquement la ville ou le repère, par exemple `Angers`.
+   L'application crée automatiquement le libellé **ATC Angers** ; aucune création préalable
+   dans Habilitations n'est nécessaire.
+5. Cliquer **Enregistrer la demande**. L'accès du collaborateur à Opti Route est immédiatement
+   désactivé et ses affectations clients sont renommées **ATC Angers**. Son code ATC et son
+   rattachement RAG sont conservés. Le prête-nom est indiqué **Départ en cours**.
+6. Ouvrir le brouillon Helpdesk et l'envoyer à **SIG-ROBOTIT@sigplc.fr** si le retrait AD reste
+   à effectuer. L'enregistrement dans Opti Route n'envoie pas le mail automatiquement.
+7. Après le retrait du groupe AD, sélectionner la demande et cliquer **Vérifier maintenant**.
+   À confirmation par le flux, la demande passe à **CLOTUREE** et le prête-nom devient
+   **Disponible** pour une reprise.
+
+Le compte Microsoft n'est pas supprimé par l'application. Le prête-nom représente un portefeuille
+sans compte Entra et sans droit de connexion. Le même parcours existe pour RAG et DR, avec les
+libellés **RAG Angers** et **DR Angers**.
+
+### Autres situations
+
+| Besoin | Parcours | Résultat |
+|---|---|---|
+| Un nouvel ATC reprend **ATC Angers** | **Demandes de groupe AD → Ajouter** : saisir son nom et prénom, choisir **ATC**, puis **Portefeuille / prête-nom à reprendre → ATC Angers**. Garder le renommage coché, vérifier le code et renseigner l'e-mail du repreneur. Enregistrer, envoyer le brouillon si nécessaire et vérifier après intervention IT. | Après confirmation AD, les clients portent le nom du collaborateur, son profil est enregistré et le prête-nom est indiqué **Attribué**. |
+| Un ATC déjà actif reprend un prête-nom | **Demandes de groupe AD → Modifier** : sélectionner le compte, garder le groupe **ATC**, sélectionner le prête-nom disponible et conserver le renommage. | À groupe identique, la reprise est appliquée directement et historisée, sans appel AD ni mail. Vérifier le périmètre cible avant enregistrement. |
+| Un nouveau collaborateur arrive sans reprendre de prête-nom | **Demandes de groupe AD → Ajouter** : laisser le choix de prête-nom vide et renseigner son périmètre. | Son profil est créé après confirmation AD. Les clients doivent exister ou être importés avec les affectations correspondantes. |
+| Un collaborateur change de rôle, par exemple ATC → RAG | **Demandes de groupe AD → Modifier** : sélectionner le compte, choisir le nouveau groupe et renseigner le périmètre cible. | Le nouveau profil est appliqué après confirmation du changement AD. |
+| Un ATC change de code ou de RAG | **Habilitations** : sélectionner le compte, modifier **Code ATC** ou **Rattachement RAG**, puis **Enregistrer le périmètre**. | Le profil et les lignes clients sont actualisés immédiatement. |
+| Un RAG gagne ou perd des portefeuilles ATC | **Habilitations** : sélectionner le RAG, ajouter ou retirer les portefeuilles dans la liste, puis enregistrer. | Les rattachements RAG des clients sont mis à jour. |
+| Un DR change d'UG de contrôle | **Habilitations** : sélectionner le DR, modifier ses UG et enregistrer. | Ses droits de contrôle et les responsables affichés dans le listing sont actualisés. |
+| Un départ a été enregistré par erreur | Dans la demande encore en cours, cliquer **Annuler la demande**. | Les affectations précédentes sont restaurées ; l'accès désactivé par cette demande est rétabli. Une modification déjà réalisée dans AD reste à traiter avec l'IT. |
+
+Après les changements, ouvrir **Portefeuille d'entreprises → Préparer la sauvegarde à jour**,
+puis télécharger l'Excel pour contrôler **Listing client** et conserver le ZIP pour l'état complet.
+Le fichier source OneDrive n'est pas réécrit automatiquement.
+
 ## Configuration du Container App
 
 | Paramètre | Valeur |
@@ -54,10 +94,11 @@ résultat est cohérent ; une erreur technique laisse la demande en attente.
    puis confirme et archive la demande. Pour un retrait, la confirmation clôture la demande ;
    le profil était déjà désactivé dès l'enregistrement.
 
-Les formulaires historiques **Habilitations** passent par le même moteur. Un changement dans le
-même groupe ajuste directement le périmètre et est archivé avec preuve `ADMIN`, sans mail ni flux.
-Lorsqu'un code ATC change, un ancien e-mail ou nom commercial conservé à l'identique est effacé pour
-qu'il ne masque pas le nouveau code. Un nouvel e-mail ou nom explicitement renseigné est conservé.
+Le volet **Habilitations** modifie directement les périmètres existants, sans mail ni flux AD,
+et conserve un journal avant/après. Un changement de code ATC conserve l'identité du commercial
+et réécrit ses lignes clients. Les ajouts, retraits et changements de rôle passent par les demandes AD.
+Une reprise de prête-nom par **Modifier** à groupe identique est appliquée directement et archivée
+avec preuve `ADMIN`.
 
 Une réponse ambiguë ou sans correspondance nécessite le choix d'un candidat ou une correction du
 nom, puis un nouveau contrôle. Une seule demande ouverte est autorisée par Object ID ou, tant que
