@@ -302,14 +302,14 @@ def test_login_never_confirms_removal_or_resolves_unknown_names(service):
     assert service.blocked(OID)
 
 
-def test_changing_only_atc_code_clears_unchanged_old_email_and_name(service):
+def test_changing_only_atc_code_preserves_commercial_identity(service):
     seed(service, atc_email="old@example.fr", atc_name="Ancien commercial")
     create(service, action="MODIFIER", principal_id=OID,
            scope={"atc_code": "31-02-004", "atc_email": "old@example.fr", "atc_name": "Ancien commercial"})
     profile = service.store.load_access_profile(OID)
     assert profile.atc_code == "31-02-004"
-    assert profile.atc_email is None
-    assert profile.atc_name is None
+    assert profile.atc_email == "old@example.fr"
+    assert profile.atc_name == "Ancien commercial"
 
 
 def test_stale_admin_token_cannot_bypass_a_confirmed_demotion(service):

@@ -126,16 +126,42 @@ Un prête-nom attribué est conservé dans l'historique du catalogue avec l'Obje
 ### Modifier uniquement les droits de périmètre
 
 Dans **Habilitations**, sélectionner **Compte dont le périmètre doit être modifié**. Le compte,
-le rôle et les champs métier sont préremplis. Modifier le code/nom/e-mail ATC, l'e-mail N+1/RAG,
-ou les UG du DR, puis enregistrer. RAG et DR disposent d'une saisie libre en complément des listes
-du portefeuille. Le maintien du même groupe applique la modification directement, sans mail ni
-appel au flux ; le changement de groupe suit le cycle AD.
+le rôle et les champs métier sont préremplis. Le rôle est en lecture seule ; un changement de rôle,
+un ajout ou un retrait de compte se fait dans **Demandes de groupe AD**.
+
+- **ATC** : modifier le code et sélectionner le RAG. Le code, l'agence et l'UG dérivées du code
+  complet ainsi que les champs N+1 sont écrits sur ses clients. L'identité du commercial est conservée.
+- **RAG** : ajouter ou retirer des portefeuilles ATC. Les champs `rag_name` et `rag_email` des clients
+  changent directement ; le portefeuille commercial personnel du RAG reste accessible selon la règle existante.
+- **DR** : sélectionner ses UG de contrôle. Le profil et les responsables `dr_name` du listing
+  sont actualisés ; les UG physiques des clients et les autres DR de ces UG sont conservés.
+
+Ces changements n'appellent pas le flux AD. La colonne **Rattachement RAG** d'un ATC est calculée
+depuis ses clients et affiche tous ses responsables s'il en a plusieurs.
+
+Lors du premier accès administrateur après cette correction, une réconciliation compare les
+prête-noms existants au listing. Elle utilise les noms normalisés (par exemple `BORDEAUX`,
+`Atc BORDEAUX` et `ATC Atc BORDEAUX`), jamais un code partagé seul. Elle applique les codes du
+catalogue aux lignes identifiées et termine les anciennes reprises déjà attribuées à un profil
+actif. Les cas ambigus et les clients faisant l'objet d'une demande AD restent inchangés.
+La migration ne crée aucun compte ni droit AD ; préparer ensuite une nouvelle sauvegarde.
+
+Un renommage demandé avec zéro client retrouvé est désormais refusé avant de créer la demande.
 
 ### Persistance et prévention des conflits
 
 Les prête-noms sont des documents `access-scopes/<id>.json` dans le même stockage privé que les
 profils. Les affectations modifiées sont enregistrées dans le portefeuille normalisé de
-l'application. Dans **Portefeuille d'entreprises → Sauvegarde à jour du portefeuille**, cliquer
+l'application. Les modifications de périmètre sont journalisées sous
+`access-requests/portfolio-operations/` avec leurs valeurs avant/après. Le verrou partagé protège
+les écritures des admins, imports et demandes AD. Après une interruption, l'ouverture admin ou
+la préparation d'une sauvegarde termine l'écriture de façon idempotente. Un import est bloqué
+tant qu'une écriture interrompue n'est pas terminée. Une modification concurrente du listing ou
+du profil invalide le formulaire ouvert ; cliquer **Actualiser le formulaire** avant de reprendre.
+La version du listing participe à la clé de cache pour que les autres réplicas relisent une
+modification enregistrée lors de leur prochaine interaction.
+
+Dans **Portefeuille d'entreprises → Sauvegarde à jour du portefeuille**, cliquer
 sur **Préparer la sauvegarde à jour**, puis télécharger :
 
 - **le portefeuille à jour (.xlsx)** : Listing client, Utilisateurs, Habilitations, Prete-noms,

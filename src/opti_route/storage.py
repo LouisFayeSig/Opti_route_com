@@ -230,6 +230,8 @@ class ApplicationStore(Protocol):
 
     def load_clients(self) -> tuple[pd.DataFrame | None, PortfolioMetadata | None]: ...
 
+    def portfolio_version(self) -> str: ...
+
     def load_route_configuration(self) -> RouteConfiguration: ...
 
     def save_route_configuration(self, configuration: RouteConfiguration) -> None: ...
@@ -466,6 +468,11 @@ class AppStore:
         except sqlite3.Error as exc:
             raise StorageError(f"Enregistrement du portefeuille impossible : {exc}") from exc
         return metadata
+
+    def portfolio_version(self) -> str:
+        with self._connection() as connection:
+            row = connection.execute("SELECT digest FROM portfolio WHERE singleton = 1").fetchone()
+        return str(row[0]) if row else ""
 
     def load_clients(self) -> tuple[pd.DataFrame | None, PortfolioMetadata | None]:
         try:

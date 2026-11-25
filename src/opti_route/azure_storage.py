@@ -148,6 +148,14 @@ class AzureBlobAppStore:
         )
         return metadata
 
+    def portfolio_version(self) -> str:
+        try:
+            return str(self._container.get_blob_client(_PORTFOLIO_BLOB).get_blob_properties().etag)
+        except ResourceNotFoundError:
+            return ""
+        except AzureError:
+            raise StorageError("Lecture de la version du portefeuille Azure impossible.") from None
+
     def load_clients(self) -> tuple[pd.DataFrame | None, PortfolioMetadata | None]:
         document = self._read_document(_PORTFOLIO_BLOB)
         if document is None:

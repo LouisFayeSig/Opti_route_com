@@ -148,24 +148,25 @@ Après la première connexion de l'administrateur, les habilitations peuvent êt
 le portefeuille, depuis les exports Entra intégrés au classeur ou les Object ID déjà renseignés
 dans **Utilisateurs**. Les CSV séparés restent acceptés ; voir
 [deployment/EXPORT_ENTRA.md](deployment/EXPORT_ENTRA.md).
-L'onglet **Administration → Habilitations** permet de préparer ou corriger un compte : il
-associe l'Object ID Entra (`oid`) de chaque ATC à son code ATC, chaque RAG à son e-mail N+1 et chaque
-DR à une ou plusieurs UG. Le rôle signé par Entra et le rôle attendu dans l'habilitation doivent
+L'onglet **Administration → Habilitations** modifie le périmètre des comptes existants :
+code et rattachement RAG pour un ATC, liste de portefeuilles ATC pour un RAG, UG de contrôle
+pour un DR. Les ajouts, retraits et changements de rôle passent par **Demandes de groupe AD**.
+Le rôle signé par Entra et le rôle attendu dans l'habilitation doivent
 correspondre ; une incohérence bloque l'accès. L'adresse e-mail sert à calculer le périmètre, mais
 l'Object ID reste la clé d'autorisation stable.
 
 Pour un RAG, l'e-mail N+1 rattache plusieurs portefeuilles et son éventuel portefeuille personnel :
 les champs Code ATC et Commercial ATC peuvent donc rester vides. Le tableau des habilitations
-affiche le nombre de portefeuilles et d'entreprises accessibles. Le choix **RAG responsable des
-portefeuilles** affiche aussi le détail des commerciaux et codes ATC concernés avant enregistrement.
+affiche le nombre d'entreprises accessibles. Le choix **Portefeuilles ATC rattachés au RAG**
+permet d'ajouter ou retirer des commerciaux, avec leurs codes et nombres de clients.
 
-Pour un ATC, **Commercial existant** sélectionne un portefeuille déjà importé. **Saisie manuelle**
-permet de créer ou modifier l'habilitation avec un nouveau code ATC et un nom de commercial, sans
-être limité à cette liste. Ces deux champs sont obligatoires ; l'e-mail est facultatif et, s'il est
-renseigné, devient le critère prioritaire de rattachement des clients. La saisie manuelle est aussi
-disponible sans portefeuille importé. Elle prépare l'accès : les clients doivent ensuite être
-importés avec le code et le nom correspondants, ou avec l'e-mail renseigné. Elle ne modifie pas
-automatiquement l'affectation des clients existants et ne crée pas de compte dans Entra.
+Pour un ATC, la modification du code réécrit les lignes clients de son portefeuille et actualise
+l'UG et l'agence dérivées d'un code complet. Le rattachement RAG est affiché depuis le listing ;
+son changement réécrit les champs N+1 des clients. Pour un DR, modifier les UG change ses droits
+et les libellés des responsables dans le listing, en conservant les autres DR de ces UG.
+Ces écritures partagent le verrou du stockage et un journal avant/après récupérable après une
+interruption. Un formulaire devenu obsolète est refusé : utiliser **Actualiser le formulaire**.
+La sauvegarde Excel reconstruit ensuite le listing effectivement enregistré.
 
 Le fichier `.streamlit/secrets.toml` est ignoré par Git. Seul le fichier d'exemple sans secret est
 versionné. En production, placer ces valeurs dans le gestionnaire de secrets de l'hébergeur.

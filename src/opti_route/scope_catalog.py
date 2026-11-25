@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -56,6 +58,42 @@ def scope_clients(clients, group, scope):
 
 def _normalized(series):
     return series.fillna("").astype(str).str.strip().str.casefold()
+
+
+def alias_key(value, group="ATC"):
+    value = " ".join(str(value or "").split()).casefold()
+    value = "".join(c for c in unicodedata.normalize("NFKD", value) if not unicodedata.combining(c))
+    pattern = rf"^{group.casefold()}(?:[\s_-]+|(?=[0-9]))"
+    while re.match(pattern, value):
+        value = re.sub(pattern, "", value, count=1).strip()
+    return value
+
+
+def catalog_clients(clients, entry, owner=None):
+    """Résout un prête-nom par son identité, jamais par un code partagé seul."""
+    if clients is None:
+        return pd.DataFrame()
+    if entry["group"] != "ATC":
+        return scope_clients(clients, entry["group"], entry["scope"])
+    if owner:
+        matched = scope_clients(clients, "ATC", business_scope("ATC", owner))
+        owner_name = owner.atc_name or owner.display_name
+        matched = matched.loc[matched["salesperson"].map(alias_key).eq(alias_key(owner_name))]
+        if not matched.empty:
+            return matched.copy()
+    source = entry.get("source_scope") or entry["scope"]
+    names = {_text(source.get("atc_name")), _text(entry["scope"].get("atc_name")), entry["display_name"]} - {""}
+    keys = {alias_key(name) for name in names}
+    matched = clients.loc[clients["salesperson"].map(alias_key).isin(keys)]
+    if matched.empty:
+        return matched
+    codes = matched["salesperson_code"].fillna("").astype(str).str.strip()
+    if codes.nunique() > 1:
+        exact = codes.str.casefold().eq(_text(source.get("atc_code")).casefold())
+        if not exact.any():
+            raise StorageConflict("Plusieurs portefeuilles portent ce libellé. Sélectionnez le code source exact avant la modification.")
+        matched = matched.loc[exact]
+    return matched.copy()
 
 
 def unassigned_from_users(users, clients=None):
@@ -191,10 +229,10 @@ def _fingerprint(frame, columns):
     return hashlib.sha256(values.to_json(orient="values", force_ascii=False).encode()).hexdigest()
 
 
-def prepare_assignment(store, group, source_scope, name, target_scope=None):
+def prepare_assignment(store, group, source_scope, name, target_scope=None, *, selected_clients=None):
     """Journal compact avant/après, limité aux clients et colonnes sélectionnés."""
     clients, _ = store.load_clients()
-    selected = scope_clients(clients, group, source_scope)
+    selected = scope_clients(clients, group, source_scope) if selected_clients is None else selected_clients
     if selected.empty:
         return None
     if clients["client_id"].astype(str).duplicated().any():
@@ -203,11 +241,17 @@ def prepare_assignment(store, group, source_scope, name, target_scope=None):
     if not name:
         raise ValueError("Le nom d'affectation est obligatoire.")
     target_scope = target_scope or {}
-    segments = []
     if group == "ATC":
         values = {"salesperson": name}
         if target_scope.get("atc_code"):
             values["salesperson_code"] = target_scope["atc_code"]
+            parts = re.fullmatch(r"([0-9]+)-([0-9]+)-[0-9]+", target_scope["atc_code"])
+            if parts:
+                values.update(ug=parts[1], agency=f"{parts[1]}-{parts[2]}")
+                addresses = clients.loc[clients["agency"].eq(values["agency"]), "agency_address"].dropna().astype(str).str.strip()
+                addresses = addresses.loc[addresses.ne("")].unique()
+                if len(addresses) == 1:
+                    values["agency_address"] = addresses[0]
         if "atc_email" in target_scope:
             values["salesperson_email"] = target_scope["atc_email"] or ""
         selections = [(selected, values)]
@@ -226,9 +270,18 @@ def prepare_assignment(store, group, source_scope, name, target_scope=None):
         selections = [(manager, values), (personal, own_values)]
     else:
         selections = [(selected, {"dr_name": name})]
+    return prepare_segments(selections, group=group)
+
+
+def prepare_segments(selections, *, group):
+    segments = []
+    ids = set()
     for frame, values in selections:
         if frame.empty:
             continue
+        if frame["client_id"].astype(str).duplicated().any():
+            raise ValueError("Les codes clients doivent être uniques avant de modifier leurs affectations.")
+        ids.update(frame["client_id"].astype(str))
         columns = list(values)
         before = frame.reindex(columns=["client_id", *columns]).fillna("").astype(str)
         after = before.copy()
@@ -254,7 +307,7 @@ def prepare_assignment(store, group, source_scope, name, target_scope=None):
             }
         )
     return (
-        {"group": group, "segments": segments, "client_count": len(selected)} if segments else None
+        {"group": group, "segments": segments, "client_count": len(ids)} if segments else None
     )
 
 
@@ -328,9 +381,10 @@ def apply_assignment(store, plan, request_id, actor_id, *, reverse=False):
 
 
 class ScopeCatalog:
-    def __init__(self, store, authorize, clock=None):
+    def __init__(self, store, authorize, clock=None, service=None):
         self.store, self.documents, self.authorize = store, store.access_documents, authorize
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.service = service
 
     def get(self, identity):
         if not identity or not identity.isalnum():
@@ -403,7 +457,7 @@ class ScopeCatalog:
             existing = [value for value in existing if value]
             created = skipped = 0
             for record in records:
-                if any(_same_scope(record, previous) for previous in existing):
+                if any(_same_scope(record, previous) or (record["group"] == previous["group"] == "ATC" and alias_key(record["display_name"]) == alias_key(previous["display_name"])) for previous in existing):
                     continue
                 try:
                     matched = scope_clients(clients, record["group"], record["scope"])
@@ -436,13 +490,17 @@ class ScopeCatalog:
             self.documents.write(BOOTSTRAP_KEY, marker, etag)
             return marker
 
-    def save(self, actor, *, group, city, scope, identity=None):
+    def save(self, actor, *, group, city, scope, identity=None, expected=None):
         self.authorize(actor)
         if group not in SCOPE_FIELDS or not city.strip():
             raise ValueError("Le rôle et la ville du prête-nom sont obligatoires.")
         with self.documents.transaction():
             self.authorize(actor)
+            if self.service:
+                self.service.operations.recover(actor)
             previous = self.get(identity) if identity else None
+            if expected is not None and previous != expected:
+                raise StorageConflict("Ce prête-nom a été modifié par un autre administrateur. Actualisez le formulaire.")
             if identity:
                 for key in self.documents.keys("access-requests/pending/"):
                     request, _ = self.documents.read(key)
@@ -456,15 +514,34 @@ class ScopeCatalog:
                 raise ValueError(
                     "Ce périmètre est déjà attribué ou concerné par un départ en cours."
                 )
+            if previous and previous["group"] != group:
+                raise ValueError("Le rôle du prête-nom ne peut pas être changé ici.")
+            city = " ".join(city.split())
+            while re.match(rf"^{group}(?:[\s_-]+|(?=[0-9]))", city, flags=re.IGNORECASE):
+                city = re.sub(rf"^{group}(?:[\s_-]+|(?=[0-9]))", "", city, count=1, flags=re.IGNORECASE).strip()
+            if not city:
+                raise ValueError("La ville ou le repère du prête-nom est obligatoire.")
+            name = f"{group} {city}"
+            source_scope = dict(scope)
+            if group == "ATC":
+                scope = {**scope, "atc_name": name}
             record = {
                 **(previous or {}),
                 "id": identity or uuid4().hex,
                 "group": group,
-                "display_name": f"{group} {' '.join(city.split())}",
+                "display_name": name,
                 "scope": scope,
                 "origin": "Administration",
                 "available": True,
                 "updated_at": self.clock().isoformat(),
                 "updated_by": actor.principal_id,
             }
+            if self.service:
+                clients, _ = self.store.load_clients()
+                source = previous or {"group": group, "scope": source_scope, "display_name": name}
+                selected = catalog_clients(clients, source)
+                plan = prepare_assignment(self.store, group, source["scope"], name, scope, selected_clients=selected)
+                record["source_scope"] = source.get("source_scope", source["scope"])
+                self.service.operations.execute(actor, plan, catalog=record, before_catalog=previous)
+                return record
             return self.put(record)

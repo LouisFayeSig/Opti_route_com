@@ -33,6 +33,11 @@ def validate_key(key):
 def guard_profile_write(store, principal_id, request_id):
     import hashlib
 
+    for key in store.access_documents.keys("access-requests/portfolio-operations/pending/"):
+        operation, _ = store.access_documents.read(key)
+        if operation and operation["id"] != request_id and (operation.get("profile") or {}).get("principal_id") == principal_id:
+            raise StorageConflict("Une écriture de périmètre doit être terminée avant de modifier ce profil.")
+
     digest = hashlib.sha256(principal_id.strip().casefold().encode("utf-8")).hexdigest()
     state, _ = store.access_documents.read(f"access-state/{digest}.json")
     owner = (state or {}).get("pending_request_id")
@@ -41,6 +46,10 @@ def guard_profile_write(store, principal_id, request_id):
 
 
 def guard_portfolio_write(store, request_id):
+    for key in store.access_documents.keys("access-requests/portfolio-operations/pending/"):
+        operation, _ = store.access_documents.read(key)
+        if operation and operation["id"] != request_id:
+            raise StorageConflict("Une écriture de périmètre doit être terminée avant de modifier le listing.")
     if request_id is not None:
         return
     documents = store.access_documents

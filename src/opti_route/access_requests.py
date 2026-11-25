@@ -18,6 +18,7 @@ from .scope_catalog import (
     apply_assignment,
     assignment_ids,
     business_scope,
+    catalog_clients,
     prepare_assignment,
     retarget_assignment,
 )
@@ -54,7 +55,12 @@ class AccessRequests:
 
     @property
     def catalog(self):
-        return ScopeCatalog(self.store, self._actor, self.clock)
+        return ScopeCatalog(self.store, self._actor, self.clock, service=self)
+
+    @property
+    def operations(self):
+        from .portfolio_operations import PortfolioOperations
+        return PortfolioOperations(self)
 
     def state(self, principal_id):
         principal_id = principal_id.strip().casefold()
@@ -206,6 +212,7 @@ class AccessRequests:
             raise ValueError("Le nom et le prénom sont obligatoires.")
         with self.documents.transaction():
             self._actor(actor)
+            self.operations.recover(actor)
             self.pending()
             profile = self.profile(principal_id) if principal_id else None
             if profile:
@@ -217,7 +224,7 @@ class AccessRequests:
             if action == "MODIFIER" and old_group not in GROUPS:
                 raise ValueError("L'ancien groupe est obligatoire.")
             request_scope = {} if action == "SUPPRIMER" else self._scope(group, scope)
-            if group == "ATC" and profile and request_scope.get("atc_code") != profile.get("atc_code"):
+            if group == "ATC" and profile and request_scope.get("atc_code") != profile.get("atc_code") and not (action == "MODIFIER" and old_group == group):
                 # Un ancien e-mail/nom prioritaire masquerait le changement de code.
                 for field in ("atc_email", "atc_name"):
                     if request_scope.get(field) == profile.get(field):
@@ -247,7 +254,11 @@ class AccessRequests:
                         raise ValueError("Le nom du repreneur est obligatoire.")
                     if group == "ATC":
                         request["scope"]["atc_name"] = name
-                    request["portfolio_change"] = prepare_assignment(self.store, group, entry["scope"], name, request["scope"])
+                    clients, _ = self.store.load_clients()
+                    selected = catalog_clients(clients, entry)
+                    request["portfolio_change"] = prepare_assignment(self.store, group, entry["scope"], name, request["scope"], selected_clients=selected)
+                    if not request["portfolio_change"]:
+                        raise ValueError("Aucun client retrouvé pour ce prête-nom. Vérifiez son périmètre avant la reprise.")
             if vacant_city is not None:
                 if not vacant_city.strip():
                     raise ValueError("La ville du prête-nom est obligatoire.")
@@ -258,6 +269,14 @@ class AccessRequests:
                 vacant_scope = {**previous_scope, **({"atc_name": name} if group == "ATC" else {})}
                 request["vacancy"] = {"id": request["id"], "name": name, "scope": vacant_scope,
                                       "change": prepare_assignment(self.store, group, previous_scope, name)}
+            if action == "MODIFIER" and group == old_group:
+                if not profile or not profile["enabled"]:
+                    raise ValueError("La modification directe nécessite un profil actif existant.")
+                request["action"] = "MODIFIER_CODE"
+                if group == "ATC" and not catalog_id:
+                    request["scope"]["atc_name"] = request["scope"].get("atc_name") or profile.get("atc_name") or profile["display_name"]
+                    request["scope"]["atc_email"] = request["scope"].get("atc_email") or profile.get("atc_email")
+                    request["portfolio_change"] = prepare_assignment(self.store, group, business_scope(group, profile), request["scope"]["atc_name"], request["scope"])
             ids = assignment_ids(request.get("portfolio_change")) | assignment_ids(request.get("vacancy", {}).get("change"))
             for other in self._pending():
                 if other["statut"] not in OPEN:
@@ -269,10 +288,6 @@ class AccessRequests:
                     raise ValueError("Ces clients font déjà l'objet d'une réaffectation en cours.")
             self._duplicate(request)
             self._event(request, "CREEE")
-            if action == "MODIFIER" and group == old_group:
-                if not profile or not profile["enabled"]:
-                    raise ValueError("La modification directe nécessite un profil actif existant.")
-                request["action"] = "MODIFIER_CODE"
             if principal_id:
                 state = self.state(principal_id)
                 request["previous_enabled"] = state.get("enabled", True)

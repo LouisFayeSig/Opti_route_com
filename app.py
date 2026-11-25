@@ -14,18 +14,13 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from opti_route.access import AccessDeniedError, authorize_portfolio, rag_portfolio_overview
+from opti_route.access import AccessDeniedError, authorize_portfolio
 from opti_route.access_admin import (
-    _check_created,
     render_access_requests,
     render_backup_panel,
-    render_scope_catalog,
 )
 from opti_route.access_requests import AccessRequests
 from opti_route.auth import (
-    ROLE_ATC,
-    ROLE_DR,
-    ROLE_RAG,
     AuthenticatedUser,
     render_account_controls,
     require_authentication,
@@ -160,10 +155,10 @@ def _access_service(store, *, with_flow=False):
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _load_persistent_app_state(
-    storage_backend: str, _store: ApplicationStore
+    storage_backend: str, _store: ApplicationStore, portfolio_version: str = ""
 ) -> tuple[pd.DataFrame | None, PortfolioMetadata | None, RouteConfiguration]:
     # storage_backend fait partie de la clé de cache ; _store est une ressource non sérialisable.
-    del storage_backend
+    del storage_backend, portfolio_version
     clients, metadata = _store.load_clients()
     return clients, metadata, _store.load_route_configuration()
 
@@ -799,296 +794,9 @@ def _admin_settings_panel(
             st.rerun()
 
 
-def _admin_access_panel(
-    store: ApplicationStore,
-    user: AuthenticatedUser,
-    clients: pd.DataFrame | None,
-) -> None:
-    st.caption(
-        "Les rôles sont attribués dans Microsoft Entra ID. Ce panneau définit uniquement "
-        "le périmètre de données des ATC, RAG et DR."
-    )
-    role_labels = {ROLE_ATC: "ATC", ROLE_RAG: "RAG", ROLE_DR: "DR"}
-    profiles = store.list_access_profiles()
-    if profiles:
-        rag_overviews = {
-            profile.principal_id: rag_portfolio_overview(clients, profile.rag_email)
-            for profile in profiles
-            if profile.role == ROLE_RAG and profile.rag_email and clients is not None
-        }
-        profile_table = pd.DataFrame(
-            [
-                {
-                    "Collaborateur": profile.display_name,
-                    "Object ID Entra": profile.principal_id,
-                    "Rôle attendu": role_labels[profile.role],
-                    "Code ATC": profile.atc_code or "",
-                    "E-mail ATC": profile.atc_email or "",
-                    "Commercial ATC": profile.atc_name or "",
-                    "E-mail RAG": profile.rag_email or "",
-                    "Périmètre RAG": (
-                        f"{len(rag_overviews[profile.principal_id])} portefeuille(s) · "
-                        f"{int(rag_overviews[profile.principal_id]['Entreprises'].sum())} entreprise(s)"
-                        if profile.principal_id in rag_overviews else ""
-                    ),
-                    "UG DR": ", ".join(profile.ugs),
-                    "Agences héritées": ", ".join(profile.agencies),
-                    "Modifié le": profile.updated_at.replace("T", " "),
-                    "Accès actif": not _access_service(store).blocked(profile.principal_id),
-                }
-                for profile in profiles
-            ]
-        )
-        st.dataframe(profile_table, hide_index=True, use_container_width=True)
-        st.caption(
-            "Pour un RAG, les colonnes Code ATC et Commercial ATC peuvent rester vides : "
-            "l'e-mail RAG ouvre les portefeuilles dont il est le N+1, ainsi que son propre "
-            "portefeuille s'il est aussi commercial."
-        )
-    else:
-        st.info("Aucune habilitation ATC, RAG ou DR n'est encore configurée.")
-
-    render_scope_catalog(_access_service(store), user)
-    st.markdown("##### Ajouter ou mettre à jour une habilitation")
-    st.caption(
-        "Utilisez le claim `oid` du compte Entra. Un rôle administrateur n'a pas besoin "
-        "d'habilitation, car son périmètre est global."
-    )
-    profile_choices = {profile.principal_id: profile for profile in profiles}
-
-    def populate_access_form():
-        selected = profile_choices.get(st.session_state.get("access_profile_selection"))
-        if selected is None:
-            st.session_state.update({"access_principal_id": "", "access_display_name": ""})
-            return
-        st.session_state.update({
-            "access_principal_id": selected.principal_id, "access_display_name": selected.display_name,
-            "access_role": role_labels[selected.role], "access_atc_mode": "Saisie manuelle",
-            "access_atc_code": selected.atc_code or "", "access_atc_name": selected.atc_name or "",
-            "access_atc_email": selected.atc_email or "", "access_rag_mode": "Saisie manuelle",
-            "access_rag_email_manual": selected.rag_email or "", "access_dr_mode": "Saisie manuelle",
-            "access_dr_ugs_manual": "-".join(selected.ugs),
-        })
-
-    st.selectbox("Compte dont le périmètre doit être modifié", [None, *profile_choices],
-                 format_func=lambda value: "— Nouveau compte / saisie libre —" if value is None else f"{profile_choices[value].display_name} · {role_labels[profile_choices[value].role]}",
-                 key="access_profile_selection", on_change=populate_access_form)
-    principal_id = st.text_input(
-        "Object ID Entra",
-        key="access_principal_id",
-        placeholder="00000000-0000-0000-0000-000000000000",
-    )
-    display_name = st.text_input(
-        "Nom affiché",
-        key="access_display_name",
-        placeholder="Prénom NOM",
-    )
-    role_label = st.radio(
-        "Rôle attendu",
-        ["ATC", "RAG", "DR"],
-        horizontal=True,
-        key="access_role",
-    )
-
-    atc_rows = pd.DataFrame(
-        columns=["salesperson_code", "salesperson", "salesperson_email"]
-    )
-    rag_rows = pd.DataFrame(columns=["rag_name", "rag_email"])
-    agencies: list[str] = []
-    ugs: list[str] = []
-    if clients is not None:
-        atc_rows = (
-            clients.reindex(
-                columns=["salesperson_code", "salesperson", "salesperson_email"]
-            )
-            .fillna("")
-            .astype(str)
-            .drop_duplicates()
-            .sort_values(["salesperson", "salesperson_code"], key=lambda values: values.str.casefold())
-        )
-        rag_rows = (
-            clients.reindex(columns=["rag_name", "rag_email"])
-            .dropna(subset=["rag_email"])
-            .fillna("")
-            .astype(str)
-            .drop_duplicates(subset=["rag_email"])
-            .sort_values(["rag_name", "rag_email"], key=lambda values: values.str.casefold())
-        )
-        agencies = sorted(
-            {
-                value.strip()
-                for value in clients["agency"].fillna("").astype(str)
-                if value.strip()
-            },
-            key=str.casefold,
-        )
-        ugs = sorted(
-            {value.strip() for value in clients["ug"].fillna("").astype(str) if value.strip()},
-            key=str.casefold,
-        )
-
-    selected_atc_code: str | None = None
-    selected_atc_email: str | None = None
-    selected_atc_name: str | None = None
-    selected_rag_email: str | None = None
-    selected_agencies: tuple[str, ...] = ()
-    selected_ugs: tuple[str, ...] = ()
-    manual_atc_scope = False
-    if role_label == "ATC":
-        atc_options = atc_rows.index.tolist()
-        atc_scope_mode = st.radio(
-            "Périmètre ATC",
-            ["Commercial existant", "Saisie manuelle"],
-            index=0 if atc_options else 1,
-            key="access_atc_mode",
-        )
-        manual_atc_scope = atc_scope_mode == "Saisie manuelle"
-        if manual_atc_scope:
-            selected_atc_code = st.text_input(
-                "Code ATC",
-                key="access_atc_code",
-                placeholder="10-03-82",
-                help="Référence complète du portefeuille, telle qu'elle figure dans le fichier clients.",
-            ).strip() or None
-            selected_atc_name = st.text_input(
-                "Nom du commercial",
-                key="access_atc_name",
-                placeholder="Prénom NOM",
-                help="Nom du commercial, tel qu'il figure dans le fichier clients.",
-            ).strip() or None
-            selected_atc_email = st.text_input(
-                "E-mail du commercial (facultatif)",
-                key="access_atc_email",
-                placeholder="prenom.nom@sigplc.fr",
-                help="S'il est renseigné, les clients sont rattachés par cet e-mail en priorité.",
-            ).strip() or None
-            st.caption(
-                "Le code ATC et le nom du commercial sont obligatoires. Vous pouvez préparer "
-                "cette habilitation avant l'import du commercial : ses clients seront accessibles "
-                "une fois le portefeuille mis à jour."
-            )
-        elif atc_options:
-            selected_atc_index = st.selectbox(
-                "Code ATC et commercial",
-                atc_options,
-                format_func=lambda index: (
-                    f"{atc_rows.at[index, 'salesperson']} · "
-                    f"{atc_rows.at[index, 'salesperson_code']}"
-                ),
-                key="access_atc_scope",
-            )
-            selected_atc_code = str(atc_rows.at[selected_atc_index, "salesperson_code"])
-            selected_atc_email = (
-                str(atc_rows.at[selected_atc_index, "salesperson_email"]).strip() or None
-            )
-            selected_atc_name = str(
-                atc_rows.at[selected_atc_index, "salesperson"]
-            ).strip() or None
-        else:
-            st.info("Aucun commercial disponible. Choisissez la saisie manuelle pour créer l'habilitation.")
-    elif role_label == "RAG":
-        rag_mode = st.radio("Périmètre RAG", ["RAG existant", "Saisie manuelle"], index=0 if not rag_rows.empty else 1, horizontal=True, key="access_rag_mode")
-        if rag_mode == "Saisie manuelle":
-            selected_rag_email = st.text_input("E-mail N+1 / RAG à autoriser", key="access_rag_email_manual").strip() or None
-        elif not rag_rows.empty:
-            rag_options = rag_rows.index.tolist()
-            selected_rag_index = st.selectbox(
-                "RAG responsable des portefeuilles",
-                rag_options,
-                format_func=lambda index: (
-                    f"{rag_rows.at[index, 'rag_name'] or rag_rows.at[index, 'rag_email']} · "
-                    f"{rag_rows.at[index, 'rag_email']}"
-                ),
-                help="Choisissez l'e-mail N+1 du RAG : il peut donner accès à plusieurs portefeuilles ATC.",
-                key="access_rag_scope",
-            )
-            selected_rag_email = str(rag_rows.at[selected_rag_index, "rag_email"]).strip() or None
-            overview = rag_portfolio_overview(clients, selected_rag_email or "")
-            st.caption(
-                f"Ce RAG aura accès à {len(overview)} portefeuille(s) et "
-                f"{int(overview['Entreprises'].sum())} entreprise(s), selon son e-mail N+1 "
-                "et son éventuel portefeuille personnel."
-            )
-            st.dataframe(overview, hide_index=True, use_container_width=True)
-        else:
-            selected_agencies = tuple(
-                st.multiselect(
-                    "Agences autorisées (portefeuille historique sans e-mail RAG)",
-                    agencies,
-                    key="access_agency_scope",
-                )
-            )
-            if not agencies:
-                st.warning("Importez d'abord un portefeuille contenant des agences.")
-    else:
-        dr_mode = st.radio("Périmètre DR", ["UG du portefeuille", "Saisie manuelle"], index=0 if ugs else 1, horizontal=True, key="access_dr_mode")
-        if dr_mode == "Saisie manuelle":
-            manual_ugs = st.text_input("Codes UG / région à autoriser", placeholder="40-45-71-37", key="access_dr_ugs_manual")
-            selected_ugs = tuple(part.strip() for part in manual_ugs.split("-") if part.strip())
-        else:
-            selected_ugs = tuple(st.multiselect("UG autorisées", ugs, key="access_ug_scope"))
-
-    if st.button(
-        "Enregistrer l'habilitation",
-        type="primary",
-        disabled=(
-            not principal_id.strip()
-            or (role_label == "ATC" and not (selected_atc_code or selected_atc_email))
-            or (manual_atc_scope and not (selected_atc_code and selected_atc_name))
-        ),
-        key="save_access_profile",
-    ):
-        try:
-            if manual_atc_scope and not (selected_atc_code and selected_atc_name):
-                raise StorageError("Le code ATC et le nom du commercial sont obligatoires.")
-            service = _access_service(store, with_flow=True)
-            existing = service.profile(principal_id)
-            request = service.create(
-                user, action="MODIFIER" if existing else "AJOUTER", group=role_label,
-                principal_id=principal_id, nom=display_name,
-                old_group=existing["role"].upper() if existing else None,
-                scope={"atc_code": selected_atc_code, "atc_email": selected_atc_email,
-                       "atc_name": selected_atc_name, "rag_email": selected_rag_email,
-                       "ugs": list(selected_ugs), "agencies": list(selected_agencies)},
-            )
-            _check_created(service, user, request)
-        except (StorageError, ValueError, PermissionError) as exc:
-            st.error(str(exc))
-        else:
-            st.success("La modification du périmètre ou la demande d'accès a été enregistrée.")
-            st.rerun()
-
-    if profiles:
-        with st.expander("Révoquer une habilitation"):
-            profile_by_id = {profile.principal_id: profile for profile in profiles}
-            revoked_id = st.selectbox(
-                "Compte",
-                list(profile_by_id),
-                format_func=lambda value: (
-                    f"{profile_by_id[value].display_name} · {value}"
-                ),
-                key="revoke_access_profile",
-            )
-            confirmed = st.checkbox(
-                "Je confirme la révocation de cet accès aux données.",
-                key="confirm_revoke_access_profile",
-            )
-            if st.button(
-                "Révoquer l'habilitation",
-                disabled=not confirmed,
-                key="delete_access_profile",
-            ):
-                try:
-                    service = _access_service(store, with_flow=True)
-                    profile = profile_by_id[revoked_id]
-                    request = service.create(user, action="SUPPRIMER", group=profile.role.upper(),
-                                             principal_id=revoked_id, nom=profile.display_name)
-                    _check_created(service, user, request)
-                except (StorageError, ValueError, PermissionError) as exc:
-                    st.error(str(exc))
-                else:
-                    st.success("L'accès est désactivé et la demande de retrait est enregistrée.")
-                    st.rerun()
+def _admin_access_panel(store, user, clients):
+    from opti_route.scope_admin import render_habilitations
+    render_habilitations(_access_service(store), user)
 
 
 def _azure_static_map_diagnostic_panel(azure_client: AzureMapsClient | None) -> None:
@@ -1155,6 +863,13 @@ def _render_admin_panel(
     azure_client: AzureMapsClient | None,
 ) -> None:
     try:
+        repaired = _access_service(store).operations.repair_catalog(user)
+        if repaired:
+            _load_persistent_app_state.clear()
+            st.session_state["scope_repair_notice"] = f"Listing client r?concili? : {repaired} affectations corrig?es. Pr?parez une nouvelle sauvegarde."
+            st.rerun()
+        if notice := st.session_state.pop("scope_repair_notice", None):
+            st.success(notice)
         _access_service(store).catalog.bootstrap_existing(user, portfolio_digest=metadata.digest if metadata else None)
     except PermissionError as exc:
         st.error(str(exc))
@@ -1561,6 +1276,7 @@ try:
     clients, portfolio_metadata, route_configuration = _load_persistent_app_state(
         settings.app_storage_backend,
         store,
+        store.portfolio_version(),
     )
 except StorageError as exc:
     st.error(str(exc))

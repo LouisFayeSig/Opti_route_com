@@ -20,6 +20,7 @@ def capture_backup(service, actor):
     with documents.transaction():
         renewed_at = time.monotonic()
         service._actor(actor)
+        service.operations.recover(actor)
         service.pending()  # Termine les écritures déjà autorisées avant la capture.
         service._actor(actor)
         clients, metadata = service.store.load_clients()

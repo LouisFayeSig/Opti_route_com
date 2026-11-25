@@ -10,7 +10,7 @@ from .contact import account_request_mailto
 from .data import list_sheet_names, read_tabular
 from .flow_client import AdUnavailable, RequeteFluxInvalide
 from .provisioning import users_sheet_name
-from .scope_catalog import scope_clients
+from .scope_catalog import catalog_clients
 from .storage import StorageError
 
 _ACTIONS = {"Ajouter": "AJOUTER", "Modifier": "MODIFIER", "Supprimer": "SUPPRIMER"}
@@ -77,7 +77,8 @@ def render_scope_catalog(service, user):
         rows = []
         for entry in entries:
             try:
-                count = len(scope_clients(clients, entry["group"], entry["scope"]))
+                owner = service.store.load_access_profile(entry["assigned_to"]) if entry.get("assigned_to") else None
+                count = len(catalog_clients(clients, entry, owner))
             except (StorageError, ValueError):
                 count = "Périmètre à compléter"
             rows.append({"Prête-nom": entry["display_name"], "Rôle": entry["group"],
@@ -111,6 +112,9 @@ def render_scope_catalog(service, user):
         editable = {entry["id"]: entry for entry in entries if entry.get("available") and not entry.get("assigned_to") and entry["id"] not in busy}
         selected = st.selectbox("Prête-nom à définir", [None, *editable], format_func=lambda value: "— Créer un prête-nom —" if value is None else editable[value]["display_name"], key="scope_catalog_edit")
         previous = editable.get(selected, {})
+        baseline_key = f"scope_catalog_baseline_{selected}"
+        if baseline_key not in st.session_state:
+            st.session_state[baseline_key] = previous
         group = st.selectbox("Population du prête-nom", ["ATC", "RAG", "DR"], index=["ATC", "RAG", "DR"].index(previous.get("group", "ATC")), key=f"scope_catalog_group_{selected}", disabled=selected is not None)
         old_name = previous.get("display_name", "")
         city = st.text_input("Ville ou repère du prête-nom", value=old_name.removeprefix(group).strip(), placeholder="Angers", key=f"scope_catalog_city_{selected}")
@@ -118,10 +122,13 @@ def render_scope_catalog(service, user):
         st.caption(f"Libellé : {group} {city.strip()}" if city.strip() else "Exemple : ATC Angers")
         if st.button("Enregistrer le prête-nom", key="scope_catalog_save"):
             try:
-                service.catalog.save(user, group=group, city=city, scope=service._scope(group, fields), identity=selected)
+                service.catalog.save(user, group=group, city=city, scope=service._scope(group, fields), identity=selected,
+                                     expected=st.session_state[baseline_key] if selected else None)
             except (StorageError, ValueError, PermissionError) as exc:
                 st.error(str(exc))
             else:
+                st.session_state.pop(baseline_key, None)
+                st.cache_data.clear()
                 st.rerun()
 
 
@@ -197,7 +204,7 @@ def render_access_requests(service, user, recipient):
             defaults = {**choices[catalog_id]["scope"]}
             try:
                 portfolio, _ = service.store.load_clients()
-                st.caption(f"Périmètre repris : {len(scope_clients(portfolio, group, defaults))} entreprise(s).")
+                st.caption(f"Périmètre repris : {len(catalog_clients(portfolio, choices[catalog_id]))} entreprise(s).")
             except (StorageError, ValueError) as exc:
                 st.warning(f"Complétez le périmètre du prête-nom dans Habilitations : {exc}")
             rename_clients = st.checkbox("Renommer les affectations clients au nom du collaborateur", value=True, key=f"request_rename_{catalog_id}_{principal_id}")
